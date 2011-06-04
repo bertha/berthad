@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <netdb.h>
 #include <fcntl.h>
+#include <errno.h>
 
 #include <glib.h>
 
@@ -325,6 +326,11 @@ splice_some_to_pipe:
                                             SPLICE_F_MORE);
                 
                 if (spliced == -1) {
+                        if (errno == EAGAIN) {
+                                g_warning("splice returned EAGAIN\n");
+                                goto bail_splice_to_pipe;
+                        }
+
                         perror("splice");
                         g_error("Splice failed?!\n");
                 }
@@ -345,6 +351,7 @@ splice_some_to_pipe:
                 } else
                         data->in_buffer += spliced;
         }
+bail_splice_to_pipe:
 
         /* Is there data to splice from the pipe to the socket?  And
          * is the socket ready? */
@@ -357,6 +364,11 @@ splice_some_from_pipe:
                                                   SPLICE_F_MORE);
 
                 if (spliced == -1) {
+                        if (errno == EAGAIN) {
+                                g_warning("splice returned EAGAIN\n");
+                                return;
+                        }
+
                         perror("splice");
                         g_error("Splice failed?!\n");
                 }
