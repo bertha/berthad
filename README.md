@@ -34,3 +34,15 @@ Clients
 See [py-bertha].
 
 [py-bertha]: http://github.com/bwesterb/py-bertha
+
+Running
+-------
+    Usage: berthad-vfs <bound host> <port> <data dir> <tmp dir>
+
+* `bound host` is address or name of the address to be bound.  For instance:
+  `localhost` or `0.0.0.0`.
+* `port` is the port on which to bind.  Clients default to 819.
+* `data dir` is the directory which will contain the blobs.  It must exist.
+* `tmp dir` is the directory which will contain the blobs while they are
+   streamed to disk during a __PUT__.  The directory must be on the same
+   mounting point as `data dir`.
