@@ -7,6 +7,7 @@
 #include <sys/socket.h>
 
 #include <stdlib.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
@@ -437,6 +438,13 @@ splice_some_from_pipe:
                 if (spliced == -1) {
                         if (errno == EAGAIN) {
                                 g_warning("splice returned EAGAIN\n");
+                                return;
+                        }
+
+                        /* socket has been closed */
+                        if (errno == EPIPE) {
+                                conn_log(conn, "EPIPE");
+                                conn_close(prog, lhconn);
                                 return;
                         }
 
@@ -952,6 +960,11 @@ int main (int argc, char** argv)
                                 "<port> <data dir> <tmp dir>\n");
                 exit(EXIT_FAILURE);
         }
+
+        /* Ignore SIGPIPE. If we splice to a socket that is shut down by the
+         * other end, SIGPIPE is raised.  That is more easily handled
+         * at the call site of splice instead of in a signal handler. */
+        signal(SIGPIPE, SIG_IGN);
 
         memset(&prog, 0, sizeof(BProgram));
         prog.running = TRUE;
