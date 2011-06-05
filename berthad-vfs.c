@@ -1,9 +1,13 @@
 #define _GNU_SOURCE
 
+#include <arpa/inet.h>
+
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
 
 #include <stdlib.h>
+#include <stdarg.h>
 #include <string.h>
 #include <unistd.h>
 #include <dirent.h>
@@ -78,6 +82,12 @@ typedef struct {
         fd_set r_fds;
         fd_set w_fds;
         int highest_fd;
+
+        /* statistics */
+        gsize n_conns; /* number of connections accepted */
+        gsize n_GET_sent; /* number of bytes sent for GETs */
+        gsize n_PUT_received; /* number of bytes received for PUTs */
+        gsize n_cycle; /* number of non-trivial main loop cycles */
 } BProgram;
 
 typedef struct {
@@ -94,6 +104,9 @@ typedef struct {
         /* pointer to additional data associated with the state 
          * of the connection */
         gpointer state_data;
+
+        /* Number of this connection */
+        gsize n;
 } BConn;
 
 typedef struct {
@@ -226,6 +239,29 @@ gchar* buf_to_hex (guint8* buf, gsize size)
 }
 
 /*
+ * Creates a human readable string from a struct sockaddr
+ */
+GString* sockaddr_to_gstring (struct sockaddr* sa)
+{
+        gsize len = MAX(INET_ADDRSTRLEN, INET6_ADDRSTRLEN);
+        char* buf = g_alloca(len);
+        gpointer src;
+        const char* ret;
+        
+        if (sa->sa_family == AF_INET)
+                src = &(((struct sockaddr_in *)sa)->sin_addr);
+        else if (sa->sa_family == AF_INET6)
+                src = &(((struct sockaddr_in6 *)sa)->sin6_addr);
+        else
+                g_assert_not_reached();
+
+        ret = inet_ntop(sa->sa_family, src, buf, len);
+        g_assert(ret == buf);
+
+        return g_string_new(buf);
+}
+
+/*
  * Sets a fd in non-blocking mode
  */
 void fd_set_nonblocking(int s)
@@ -236,11 +272,38 @@ void fd_set_nonblocking(int s)
 }
 
 /*
+ * Logs a message for a connection
+ */
+void conn_log(BConn* conn, const char* format, ...)
+{
+        va_list arglist;
+        GString* msg = g_string_sized_new(128);
+        struct timeval tv;
+        guint64 microts;
+
+        /* Get microseconds timestamp */
+        gettimeofday(&tv, NULL);
+        microts = (guint64)tv.tv_sec * 1000000 + tv.tv_usec;
+
+        /* Get their message */
+        va_start(arglist, format);
+        g_string_vprintf(msg, format, arglist);
+        va_end(arglist);
+
+        /* Print our message */
+        printf("%ld %ld %s\n", conn->n, microts, msg->str);
+
+        g_string_free(msg, TRUE);
+}
+
+/*
  * Closes and frees a connection
  */
 void conn_close(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
+
+        conn_log(conn, "close");
 
         if (conn->state == BCONN_STATE_LIST) {
                 BConnList* data = conn->state_data;
@@ -292,10 +355,17 @@ void conn_close(BProgram* prog, GList* lhconn)
 void conn_accept(BProgram* prog)
 {
         BConn* conn = g_slice_new0(BConn);
+        GString* human_addr;
+
+        conn->n = prog->n_conns++;
+        conn->addrlen = sizeof(conn->addr);
 
         /* accept the connection */
         conn->sock = accept(prog->lsock, &conn->addr, &conn->addrlen);
         g_assert(conn->sock >= 0);
+        human_addr = sockaddr_to_gstring(&conn->addr);
+        conn_log(conn, "accepted %s", human_addr->str);
+        g_string_free(human_addr, TRUE);
 
         /* set the socket to non-blocking */
         fd_set_nonblocking(conn->sock);
@@ -375,6 +445,7 @@ splice_some_from_pipe:
                 }
                 g_assert(spliced > 0);
 
+                prog->n_GET_sent += spliced;
                 data->socket_ready = FALSE;
                 data->in_buffer -= spliced;
 
@@ -441,7 +512,7 @@ got_key:
                 /* Open the file */
                 g_string_printf(fn, "%s/%s", prog->dataPath, hex_key);
                 data->fd = open(fn->str, O_RDONLY, 0);
-                printf("GET %s\n", hex_key);
+                conn_log(conn, "GET %s", hex_key);
                 g_string_free(fn, TRUE);
                 g_slice_free1(65, hex_key);
 
@@ -509,6 +580,7 @@ read_some:
                 received = recv(conn->sock, buf2, CFG_PUT_BUFFER, 0);
                 g_assert(received >= 0);
 
+                prog->n_PUT_received += received;
                 data->socket_ready = FALSE;
 
                 /* Is the stream closed? */
@@ -591,7 +663,7 @@ check_if_done:
                 g_assert(ret == 0);
                 g_string_free(target, TRUE);
 
-                printf("PUT %s\n", key_hex);
+                conn_log(conn, "PUT %s", key_hex);
                 g_slice_free1(65, key_hex);
 
                 /* Transition to BCONN_STATE_PUT2 */
@@ -610,7 +682,7 @@ void conn_handle_list(BProgram* prog, GList* lhconn)
         ssize_t sent;
         int flags = 0;
 
-        printf("LIST\n");
+        conn_log(conn, "LIST");
 
         /* Read directory names into the buffer */
         while (data->dir && data->buf->len < CFG_LIST_BUFFER) {
@@ -723,6 +795,7 @@ void conn_handle_initial(BProgram* prog, GList* lhconn)
                 data->fd = mkstemp(data->tmp_fn->str);
                 g_assert(data->fd != -1);
                 fd_set_nonblocking(data->fd);
+                conn_log(conn, "PUT %s", data->tmp_fn->str);
 
                 /* Set up the checksum */
                 data->checksum = g_checksum_new(G_CHECKSUM_SHA256);
@@ -732,7 +805,7 @@ void conn_handle_initial(BProgram* prog, GList* lhconn)
         } else if (cmd == BERTHA_QUIT) {
                 GList* lhconn2;
 
-                printf("QUIT\n");
+                conn_log(conn, "QUIT");
                 for (lhconn2 = prog->conns; lhconn2;
                                 lhconn2 = g_list_next(lhconn2))
                         conn_close(prog, lhconn2);
@@ -954,6 +1027,8 @@ int main (int argc, char** argv)
                         perror("select");
                         exit(EXIT_FAILURE);
                 } 
+
+                prog.n_cycle++;
 
                 /* Check the activity */
                 check_fd_sets(&prog);
