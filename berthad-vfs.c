@@ -56,6 +56,7 @@
 #define BERTHA_LIST     ((guint8)0)
 #define BERTHA_PUT      ((guint8)1)
 #define BERTHA_GET      ((guint8)2)
+#define BERTHA_QUIT     ((guint8)3)
 
 typedef struct {
         /* listening socket */
@@ -728,6 +729,14 @@ void conn_handle_initial(BProgram* prog, GList* lhconn)
 
                 /* Initialize the write buffer */
                 data->buf = g_byte_array_sized_new(CFG_PUT_BUFFER);
+        } else if (cmd == BERTHA_QUIT) {
+                GList* lhconn2;
+
+                printf("QUIT\n");
+                for (lhconn2 = prog->conns; lhconn2;
+                                lhconn2 = g_list_next(lhconn2))
+                        conn_close(prog, lhconn2);
+                prog->running = FALSE;
         } else
                 conn_close(prog, lhconn);
 }
