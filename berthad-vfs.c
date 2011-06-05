@@ -524,6 +524,10 @@ got_key:
                 g_string_free(fn, TRUE);
                 g_slice_free1(65, hex_key);
 
+                /* Advise the kernel on the access pattern */
+                posix_fadvise(data->fd, 0, 0, POSIX_FADV_WILLNEED);
+                posix_fadvise(data->fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+
                 /* The file couldn't be opened - break */
                 if(data->fd < 0) {
                         g_warning("GET2 Couldn't open file\n");
