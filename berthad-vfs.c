@@ -35,6 +35,14 @@
 
 /*
  * States of connections
+ *
+ * cmd   states
+ * LIST  INITIAL => LIST
+ * PUT   INITIAL =>         PUT => PUT2
+ * SPUT  INITIAL => SPUT => PUT => PUT2
+ * GET   INITIAL => GET  =>         GET2
+ * SGET  INITIAL => GET  => SGET => GET2
+ * QUIT  INITIAL
  */
 
 /* Connection has been accepted.  We wait for the command byte. */
