@@ -33,6 +33,12 @@
 #ifndef CFG_GET_BUFFER
 #define CFG_GET_BUFFER 65536
 #endif
+#ifndef CFG_DATADIR_WIDTH
+#define CFG_DATADIR_WIDTH 2
+#endif
+#ifndef CFG_DATADIR_DEPTH
+#define CFG_DATADIR_DEPTH 2
+#endif
 
 /*
  * States of connections
@@ -143,8 +149,25 @@ typedef struct {
 } BConn;
 
 typedef struct {
-        /* handle on the data dir */
-        DIR* dir;
+        /* Partial hexadecimal key */
+        GString* key;
+
+        /* Path to the directory */
+        GString* path;
+
+        /* Depth of this directory */
+        guint8 depth;
+} BConnListEntry;
+
+typedef struct {
+        /* handle of the current directory enumerated */
+        DIR* cdir_handle;
+
+        /* entry of the current directory enumerated */
+        BConnListEntry* cdir;
+
+        /* Stack of directories names to search */
+        GList* dirs;
 
         /* The send buffer */
         GByteArray* buf;
@@ -239,6 +262,56 @@ char uint4_to_hex (guint8 byte)
 }
 
 /*
+ * Returns whether the path specified is a direcotry
+ */
+gboolean path_is_dir (char* path)
+{
+        struct stat st;
+        int ret;
+
+        ret = stat(path, &st);
+        if (ret != 0)
+                return FALSE;
+        return S_ISDIR(st.st_mode);
+}
+
+/*
+ * Ensures the specified directory exists.
+ */
+void mkdirs (char* path)
+{
+        char* path2 = g_strdup(path);
+        char* tmp;
+        gsize len;
+        int ret;
+
+        len = strlen(path2);
+
+        /* strip trailing / */
+        if(path2[len-1] == '/') {
+                path2[len-1] = '\0';
+                len--;
+        }
+
+        /* search down until we find a directory that does exist */
+        while (!path_is_dir(path2)) {
+                tmp = strrchr(path2, '/');
+                g_assert(tmp != NULL);
+                tmp[0] = '\0';
+        }
+
+        /* work up to create them */
+        while (strlen(path2) < len) {
+                path2[strlen(path2)] = '/';
+                ret = mkdir(path2, 0700);
+                g_assert(ret == 0);
+        }
+
+        g_free(path2);
+}
+
+
+/*
  * Converts a hexadecimal string to an bytearray
  * Free with g_slice_free1
  */
@@ -293,6 +366,30 @@ gchar* buf_to_hex (guint8* buf, gsize size)
         }
 
         return str;
+}
+
+/*
+ * Returns the path to the file for the blob with key <key>
+ * It may create directories that are missing
+ */
+GString* key_to_path (BProgram* prog, char* key)
+{
+        GString* fn = g_string_sized_new(128);
+        int i;
+
+        g_string_printf(fn, "%s/", prog->dataPath);
+
+        for (i = 0; i < CFG_DATADIR_DEPTH; i++) {
+                char* bit = g_strndup(key, CFG_DATADIR_WIDTH);
+                g_string_append_printf(fn, "%s/", bit);
+                g_free(bit);
+                key += CFG_DATADIR_WIDTH;
+        }
+
+        mkdirs(fn->str);
+
+        g_string_append(fn, key);
+        return fn;
 }
 
 /*
@@ -375,8 +472,24 @@ void conn_close(BProgram* prog, GList* lhconn)
 
         if (conn->state == BCONN_STATE_LIST) {
                 BConnList* data = conn->state_data;
-                if (data->dir)
-                        closedir(data->dir);
+                if (data->cdir_handle)
+                        closedir(data->cdir_handle);
+                if (data->dirs) {
+                        GList* lhdir;
+                        for (lhdir = data->dirs; lhdir;
+                                        lhdir = g_list_next(lhdir)) {
+                                BConnListEntry* e = lhdir->data;
+                                g_string_free(e->key, TRUE);
+                                g_string_free(e->path, TRUE);
+                                g_slice_free(BConnListEntry, lhdir->data);
+                        }
+                        g_list_free(data->dirs);
+                }
+                if (data->cdir) {
+                        g_string_free(data->cdir->key, TRUE);
+                        g_string_free(data->cdir->path, TRUE);
+                        g_slice_free(BConnListEntry, data->cdir);
+                }
                 if (data->buf)
                         g_byte_array_unref(data->buf);
                 g_slice_free(BConnList, data);
@@ -688,11 +801,11 @@ got_key:
          * into the socket.  First, we'll need to open the file. */
         if(TRUE) {
                 int ret;
-                GString* fn = g_string_sized_new(128);
+                GString* fn;
                 char* hex_key = buf_to_hex(key, 32);
                 
                 /* Open the file */
-                g_string_printf(fn, "%s/%s", prog->dataPath, hex_key);
+                fn = key_to_path(prog, hex_key);
                 data->fd = open(fn->str, O_RDONLY, 0);
                 conn_log(conn, "%s %s", conn->cmd == BERTHA_SGET
                                         ? "SGET" : "GET", hex_key);
@@ -883,7 +996,7 @@ check_if_done:
                 int ret;
                 guint8 key[32];
                 gchar* key_hex;
-                GString* target = g_string_sized_new(128);
+                GString* target;
                 gsize len = 32;
 
                 /* Get the final key */
@@ -894,7 +1007,7 @@ check_if_done:
                 data->checksum = NULL;
 
                 /* Move the temporary file into place */
-                g_string_printf(target, "%s/%s", prog->dataPath, key_hex);
+                target = key_to_path(prog, key_hex);
                 ret = rename(data->tmp_fn->str, target->str);
                 g_assert(ret == 0);
                 g_string_free(target, TRUE);
@@ -909,6 +1022,101 @@ check_if_done:
 }
 
 /*
+ * Gets the next key in the listing.  Updates data.
+ */
+guint8* _conn_handle_list_next_key(BProgram* prog, BConn* conn, BConnList* data)
+{
+        struct dirent* de;
+        GString* key_hex;
+        guint8* ret;
+        gsize len;
+
+        /* Delve up and down the directory tree until it is
+         * exhausted or we find a file */
+        while (data->dirs || data->cdir) {
+                if (!data->cdir_handle) {
+                        g_assert(data->cdir == NULL);
+
+                        /* Pop the first entry from the <dirs> stack */
+                        data->cdir = data->dirs->data;
+                        data->dirs = g_list_delete_link(data->dirs, data->dirs);
+
+                        /* Open the directory */
+                        data->cdir_handle = opendir(data->cdir->path->str);
+                        g_assert(data->cdir_handle);
+                }
+
+                de = readdir(data->cdir_handle);
+
+                if (!de) { /* directory is depleted */
+                        /* Close directory */
+                        closedir(data->cdir_handle);
+                        data->cdir_handle = NULL;
+
+                        /* Free entry */
+                        g_string_free(data->cdir->path, TRUE);
+                        g_string_free(data->cdir->key, TRUE);
+                        g_slice_free(BConnListEntry, data->cdir);
+                        data->cdir = NULL;
+
+                        continue;
+                }
+
+                /* ignore . and .. */
+                if (strcmp(de->d_name, ".") == 0
+                                || strcmp(de->d_name, "..") == 0)
+                        continue;
+
+                /* If we're not at the leaves, expect more directories.
+                 * Push there on the stack. */
+                if (data->cdir->depth < CFG_DATADIR_DEPTH) {
+                        BConnListEntry* e;
+
+                        if (strlen(de->d_name) != CFG_DATADIR_WIDTH
+                                        || !is_hex(de->d_name)) {
+                                g_warning("Malformed path %s/%s in datadir",
+                                        data->cdir->path->str, de->d_name);
+                                continue;
+                        }
+
+                        /* Create a new entry */
+                        e = g_slice_new(BConnListEntry);
+                        e->path = g_string_new(data->cdir->path->str);
+                        g_string_append_printf(e->path, "/%s", de->d_name);
+                        e->key = g_string_new(data->cdir->key->str);
+                        g_string_append(e->key, de->d_name);
+                        e->depth = data->cdir->depth + 1;
+
+                        /* Push it on the stack */
+                        data->dirs = g_list_prepend(data->dirs, e);
+                        continue;
+                }
+
+                g_assert(data->cdir->depth == CFG_DATADIR_DEPTH);
+
+                /* We expect files */
+                if (strlen(de->d_name) !=
+                                64 - CFG_DATADIR_WIDTH * CFG_DATADIR_DEPTH
+                                || !is_hex(de->d_name)) {
+                        g_warning("Malformed path %s/%s in datadir",
+                                        data->cdir->path->str, de->d_name);
+                        continue;
+                }
+
+                /* Convert the key from hexadecimal to binary */
+                key_hex = g_string_new(data->cdir->key->str);
+                g_string_append(key_hex, de->d_name);
+                g_assert(key_hex->len == 64);
+                ret =  hex_to_buf(key_hex->str, &len);
+                g_assert(len == 32);
+                g_string_free(key_hex, TRUE);
+                return ret;
+        }
+
+        return NULL;
+}
+
+/*
  * Writes some data to a BCONN_STATE_LIST connection
  */
 void conn_handle_list(BProgram* prog, GList* lhconn)
@@ -918,34 +1126,12 @@ void conn_handle_list(BProgram* prog, GList* lhconn)
         ssize_t sent;
         int flags = 0;
 
-        conn_log(conn, "LIST");
-
         /* Read directory names into the buffer */
-        while (data->dir && data->buf->len < CFG_LIST_BUFFER) {
-                struct dirent* de = readdir(data->dir);
-                size_t len;
-                guint8* key;
+        while ((data->dirs || data->cdir) && data->buf->len < CFG_LIST_BUFFER) {
+                guint8* key = _conn_handle_list_next_key(prog, conn, data);
 
-                if (!de) { /* directory has been fully listed */
-                        closedir(data->dir);
-                        data->dir = NULL;
+                if(!key)
                         break;
-                }
-
-                len = strlen(de->d_name);
-
-                /* Check if the filename is a proper key */
-                if (len != 64 || !is_hex(de->d_name)) {
-                        if(strcmp(de->d_name, ".") != 0
-                                        && strcmp(de->d_name, "..") != 0)
-                                g_warning("Malformed file in datadir: %s "
-                                                "- ignoring\n", de->d_name);
-                        continue;
-                }
-
-                /* Convert hex filename to binary */
-                key = hex_to_buf(de->d_name, &len);
-                g_assert(len == 32);
 
                 /* Append to buffer */
                 g_byte_array_append(data->buf, key, 32);
@@ -953,7 +1139,7 @@ void conn_handle_list(BProgram* prog, GList* lhconn)
         }
 
         /* Try to send it */
-        if (data->dir)
+        if (data->dirs || data->cdir)
                 flags = MSG_MORE;
 
         if(data->buf->len > 0) {
@@ -966,7 +1152,7 @@ void conn_handle_list(BProgram* prog, GList* lhconn)
         }
 
         /* If there is nothing more to sent, close the connection */
-        if (!data->dir && data->buf->len == 0) {
+        if (!data->dirs && !data->cdir && data->buf->len == 0) {
                 shutdown(conn->sock, SHUT_RDWR);
                 conn_close(prog, lhconn);
         }
@@ -996,14 +1182,20 @@ void conn_handle_initial(BProgram* prog, GList* lhconn)
         /* Check the command */
         if (cmd == BERTHA_LIST) {
                 BConnList* data = g_slice_new0(BConnList);
+                BConnListEntry* e = g_slice_new0(BConnListEntry);
 
                 /* Set new connection state */
                 conn->state = BCONN_STATE_LIST;
                 conn->state_data = data;
+                conn_log(conn, "LIST");
                 
-                /* Open the data directory */
-                data->dir = opendir(prog->dataPath);
-                g_assert(data->dir);
+                /* Add the dataDir to the stack */
+                e->key = g_string_new("");
+                e->path = g_string_new(prog->dataPath);
+                e->depth = 0;
+                data->dirs = g_list_prepend(data->dirs, e);
+                data->cdir = NULL;
+                data->cdir_handle = NULL;
 
                 /* Initialize the send buffer */
                 data->buf = g_byte_array_sized_new(CFG_LIST_BUFFER);
@@ -1275,6 +1467,9 @@ int main (int argc, char** argv)
         prog.running = TRUE;
         prog.dataPath = argv[3];
         prog.tmpPath = argv[4];
+
+        g_assert(path_is_dir(prog.dataPath));
+        g_assert(path_is_dir(prog.tmpPath));
 
         /* Initialize thread_pool */
         prog.threadpool = g_thread_pool_new(threadpool_entry, NULL,
