@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 
 #include <arpa/inet.h>
+#include <linux/falloc.h>
 
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -107,6 +108,9 @@ typedef struct {
         gsize n_GET_sent; /* number of bytes sent for GETs */
         gsize n_PUT_received; /* number of bytes received for PUTs */
         gsize n_cycle; /* number of non-trivial main loop cycles */
+
+        /* threadpool for async. fadvise and fallocate */
+        GThreadPool* threadpool;
 } BProgram;
 
 typedef struct {
@@ -129,6 +133,13 @@ typedef struct {
 
         /* the command send by the client */
         guint8 cmd;
+
+        /* Number of threads working on this object */
+        gint n_threads;
+
+        /* Condition/mutex pair  used to join threads, if there are any. */
+        GCond* threads_cond;
+        GMutex* threads_mutex;
 } BConn;
 
 typedef struct {
@@ -162,6 +173,9 @@ typedef struct {
          * For BCONN_STATE_PUT2 this contains the hash to send back.
          * For BCONN_STATE_SPUT this is the file length read buffer. */
         GByteArray* buf;
+
+        /* The size advised by the client in case of a SPUT */
+        guint64 advised_size;
 } BConnPut;
 
 typedef struct {
@@ -187,6 +201,26 @@ typedef struct {
         size_t in_buffer;
 } BConnGet;
 
+/* Call fadvise for file read for GET async, since it may block */
+#define BJOB_FADVISE    0
+
+/* Call fallocate for file written by PUT async, since it will block */
+#define BJOB_FALLOCATE  1
+
+typedef struct {
+        /* type of the job */
+        guint8 type;
+
+        /* pointer to the program */
+        BProgram* prog;
+} BJob;
+
+typedef struct {
+        BJob parent;
+
+        /* pointer to the connection */
+        BConn* conn;
+} BJobConn;
 
 /*
  * Converts a single hexadecimal digit to a byte
@@ -326,6 +360,17 @@ void conn_close(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
 
+        /* Check if there are still threads working on this connection.
+         * And if so, wait on them */
+        if (conn->threads_mutex != NULL) {
+                g_assert(conn->threads_cond != NULL);
+                g_mutex_lock(conn->threads_mutex);
+                if(conn->n_threads > 0)
+                        g_cond_wait(conn->threads_cond, conn->threads_mutex);
+                g_mutex_unlock(conn->threads_mutex);
+                g_assert(conn->n_threads == 0);
+        }
+
         conn_log(conn, "close");
 
         if (conn->state == BCONN_STATE_LIST) {
@@ -365,6 +410,11 @@ void conn_close(BProgram* prog, GList* lhconn)
                 g_slice_free(BConnGet, data);
         }
 
+        if (conn->threads_mutex)
+                g_mutex_free(conn->threads_mutex);
+        if (conn->threads_cond)
+                g_cond_free(conn->threads_cond);
+
         /* Close the socket */
         if (conn->sock)
                 close(conn->sock); 
@@ -373,6 +423,37 @@ void conn_close(BProgram* prog, GList* lhconn)
         prog->conns = g_list_delete_link(prog->conns, lhconn);
         g_slice_free(BConn, conn);
 }
+
+/*
+ * Starts a BJOB for a connection
+ * Used for async. fallocate and fadvise
+ */
+void  conn_start_job (BProgram* prog, BConn* conn, guint8 type)
+{
+        GError* err = NULL;
+        BJobConn* job = g_slice_new0(BJobConn);
+
+        job->parent.type = type;
+        job->conn = conn;
+
+        /* initialize mutex and condition if we have not already */
+        if (conn->threads_mutex == NULL) {
+                g_assert(conn->threads_cond == NULL);
+                g_assert(conn->n_threads == 0);
+                conn->threads_mutex = g_mutex_new();
+                conn->threads_cond = g_cond_new();
+        }
+
+        g_mutex_lock(conn->threads_mutex);
+        conn->n_threads++;
+        g_mutex_unlock(conn->threads_mutex);
+        
+        /* run it */
+        g_thread_pool_push(prog->threadpool, job, &err);
+        if (err)
+                g_error("g_thread_pool_push: %s", err->message);
+}
+
 
 /*
  * Accepts a new connection
@@ -545,7 +626,9 @@ got_size:
 
                 conn_log(conn, "SPUT %s %ld", data->tmp_fn->str, size);
 
-                /* TODO at the moment we don't use the size */
+                /* Pre-allocate the file in a separate thread */
+                data->advised_size = size;
+                conn_start_job(prog, conn, BJOB_FALLOCATE);
 
                 conn->state = BCONN_STATE_PUT;
         }
@@ -605,8 +688,12 @@ got_key:
                 g_slice_free1(65, hex_key);
 
                 /* Advise the kernel on the access pattern */
-                posix_fadvise(data->fd, 0, 0, POSIX_FADV_WILLNEED);
-                posix_fadvise(data->fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+                ret = posix_fadvise(data->fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+                g_assert(ret == 0);
+
+                /* We call posix_fadvise with POSIX_FADV_WILLNEED in a
+                 * separate thread, since it may block. */
+                conn_start_job(prog, conn, BJOB_FADVISE);
 
                 /* The file couldn't be opened - break */
                 if(data->fd < 0) {
@@ -1095,6 +1182,60 @@ void reset_fd_sets(BProgram* prog)
         }
 }
 
+/*
+ * Advices the kernel to readahead some data on a file being spliced.
+ */
+void job_fadvise(BJobConn* job)
+{
+        BConn* conn = job->conn;
+        BConnGet* data = conn->state_data;
+        int ret;
+
+        ret = posix_fadvise(data->fd, 0, 0, POSIX_FADV_WILLNEED);
+        g_assert(ret == 0);
+}
+
+/*
+ * Preallocates a file for a PUT
+ */
+void job_fallocate(BJobConn* job)
+{
+        BConn* conn = job->conn;
+        BConnPut* data = conn->state_data;
+        int ret;
+        
+        ret = fallocate(data->fd, FALLOC_FL_KEEP_SIZE, 0, data->advised_size);
+        g_assert(ret == 0);
+}
+
+/*
+ * Entry of jobs started at the threadpool.
+ */
+void threadpool_entry(gpointer _job, gpointer unused)
+{
+        BJob* job = _job;
+        if (job->type == BJOB_FADVISE ||
+                        job->type == BJOB_FALLOCATE) {
+                BJobConn* jobc = _job;
+
+                if (job->type == BJOB_FADVISE)
+                        job_fadvise(jobc);
+                else if (job->type == BJOB_FALLOCATE)
+                        job_fallocate(jobc);
+                else
+                        g_assert_not_reached();
+
+                /* Signal the connection condition if we were the last thread
+                 * on that connection */
+                g_mutex_lock(jobc->conn->threads_mutex);
+                if (--jobc->conn->n_threads == 0)
+                        g_cond_signal(jobc->conn->threads_cond);
+                g_mutex_unlock(jobc->conn->threads_mutex);
+                g_slice_free(BJobConn, jobc);
+        } else
+                g_assert_not_reached();
+}
+
 int main (int argc, char** argv)
 {
         BProgram prog;
@@ -1102,6 +1243,9 @@ int main (int argc, char** argv)
         struct addrinfo *addrs, *addr;
         int ret;
         int optval;
+
+        /* Initialize GLib threads */
+        g_thread_init(NULL);
 
         /* Check number of arguments */
         if (argc != 5) {
@@ -1119,6 +1263,10 @@ int main (int argc, char** argv)
         prog.running = TRUE;
         prog.dataPath = argv[3];
         prog.tmpPath = argv[4];
+
+        /* Initialize thread_pool */
+        prog.threadpool = g_thread_pool_new(threadpool_entry, NULL,
+                                                        -1, FALSE, NULL);
 
         /* Resolve hostname */
         memset(&hints, 0, sizeof(struct addrinfo));
@@ -1195,6 +1343,8 @@ int main (int argc, char** argv)
                 /* Check the activity */
                 check_fd_sets(&prog);
         }
+
+        g_thread_pool_free(prog.threadpool, FALSE, TRUE);
 
         return 0;
 }
