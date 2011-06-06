@@ -2,6 +2,7 @@
 
 #include <arpa/inet.h>
 
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -55,6 +56,12 @@
 /* We are waiting to splice the file to the socket*/
 #define BCONN_STATE_GET2        5
 
+/* We are waiting to for the length on the socket */
+#define BCONN_STATE_SPUT        6
+
+/* We are waiting to send the length of the file over the socket */
+#define BCONN_STATE_SGET        7
+
 /*
  * Commands bytes in the bertha protocol
  */
@@ -62,6 +69,9 @@
 #define BERTHA_PUT      ((guint8)1)
 #define BERTHA_GET      ((guint8)2)
 #define BERTHA_QUIT     ((guint8)3)
+#define BERTHA_SPUT     ((guint8)4)
+#define BERTHA_SGET     ((guint8)5)
+#define BERTHA_NONE     ((guint8)255)
 
 typedef struct {
         /* listening socket */
@@ -108,6 +118,9 @@ typedef struct {
 
         /* Number of this connection */
         gsize n;
+
+        /* the command send by the client */
+        guint8 cmd;
 } BConn;
 
 typedef struct {
@@ -137,8 +150,9 @@ typedef struct {
         /* Can we write data to the file? */
         gboolean file_ready;
 
-        /* The file write buffer if status is BCONN_STATE_PUT,
-         * else (BCONN_STATE_PUT2) it contains the key to be send */
+        /* For BCONN_STATE_PUT this is the file write buffer.
+         * For BCONN_STATE_PUT2 this contains the hash to send back.
+         * For BCONN_STATE_SPUT this is the file length read buffer. */
         GByteArray* buf;
 } BConnPut;
 
@@ -314,7 +328,8 @@ void conn_close(BProgram* prog, GList* lhconn)
                         g_byte_array_unref(data->buf);
                 g_slice_free(BConnList, data);
         } else if (conn->state == BCONN_STATE_PUT 
-                        || conn->state == BCONN_STATE_PUT2) {
+                        || conn->state == BCONN_STATE_PUT2
+                        || conn->state == BCONN_STATE_SPUT) {
                 BConnPut* data = conn->state_data;
                 if (data->checksum)
                         g_checksum_free(data->checksum);
@@ -328,7 +343,8 @@ void conn_close(BProgram* prog, GList* lhconn)
                         g_byte_array_unref(data->buf);
                 g_slice_free(BConnPut, data);
         } else if (conn->state == BCONN_STATE_GET
-                        || conn->state == BCONN_STATE_GET2) {
+                        || conn->state == BCONN_STATE_GET2
+                        || conn->state == BCONN_STATE_SGET) {
                 BConnGet* data = conn->state_data;
                 if (data->buf)
                         g_byte_array_unref(data->buf);
@@ -359,6 +375,7 @@ void conn_accept(BProgram* prog)
         GString* human_addr;
 
         conn->n = prog->n_conns++;
+        conn->cmd = BERTHA_NONE;
         conn->addrlen = sizeof(conn->addr);
 
         /* accept the connection */
@@ -473,6 +490,60 @@ check_if_done:
 }
 
 /*
+ * Read the length from the BCONN_STATE_SPUT connection.
+ */
+void conn_handle_sput(BProgram* prog, GList* lhconn)
+{
+        BConn* conn = lhconn->data;
+        BConnPut* data = conn->state_data;
+        ssize_t received;
+        guint8 buf2[8];
+        guint64* size_ptr;
+
+        received = recv(conn->sock, buf2, 8 - data->buf->len, 0);
+        g_assert(received >= 0);
+
+        /* Premature end of stream: ignore */
+        if (received == 0) {
+                g_warning("SPUT Premature end of stream\n");
+                conn_close(prog, lhconn);
+                return;
+        }
+
+        /* Shortcut for when we've received the length in one part */
+        if (received == 8) {
+                g_assert(data->buf->len == 0);
+                size_ptr = (guint64*)buf2;
+                goto got_size;
+        }
+
+        g_byte_array_append(data->buf, buf2, received);
+
+        /* have we received the full key? */
+        if (data->buf->len == 8) {
+                size_ptr = (guint64*)data->buf->data;
+                goto got_size;
+        }
+        return;
+
+got_size:
+        /* We got the size!  Now transition into BCONN_STATE_PUT. */
+        if (TRUE) {
+                guint64 size = GUINT64_FROM_LE(*size_ptr);
+
+                /* Clear the buffer */
+                if (data->buf->len > 0)
+                        g_byte_array_remove_range(data->buf, 0, data->buf->len);
+
+                conn_log(conn, "SPUT %s %ld", data->tmp_fn->str, size);
+
+                /* TODO at the moment we don't use the size */
+
+                conn->state = BCONN_STATE_PUT;
+        }
+}
+
+/*
  * Read the key from the BCONN_STATE_GET connection
  */
 void conn_handle_get(BProgram* prog, GList* lhconn)
@@ -520,7 +591,8 @@ got_key:
                 /* Open the file */
                 g_string_printf(fn, "%s/%s", prog->dataPath, hex_key);
                 data->fd = open(fn->str, O_RDONLY, 0);
-                conn_log(conn, "GET %s", hex_key);
+                conn_log(conn, "%s %s", conn->cmd == BERTHA_SGET
+                                        ? "SGET" : "GET", hex_key);
                 g_string_free(fn, TRUE);
                 g_slice_free1(65, hex_key);
 
@@ -547,10 +619,55 @@ got_key:
                 data->socket_ready = FALSE;
                 data->file_ready = FALSE;
                 data->file_eos = FALSE;
-                conn->state = BCONN_STATE_GET2;
+
+                /* If the original command is SGET, we will first send the
+                 * size of the file */
+                if (conn->cmd == BERTHA_SGET) {
+                        struct stat st;
+                        guint64 size;
+
+                        /* Get the size of the file */
+                        ret = fstat(data->fd, &st);
+
+                        if(ret != 0) {
+                                perror("fstat");
+                                g_error("fstat failed\n");
+                        }
+
+                        size = GUINT64_TO_LE(st.st_size);
+                        
+                        /* Write it to the buffer */
+                        if (data->buf->len > 0)
+                                g_byte_array_remove_range(data->buf, 0,
+                                                data->buf->len);
+                        g_byte_array_append(data->buf, (gpointer)&size, 8);
+
+                        conn->state = BCONN_STATE_SGET;
+                } else
+                        conn->state = BCONN_STATE_GET2;
         }
 }
 
+/*
+ * Write the size of the file to the BCONN_STATE_SGET connection
+ */
+void conn_handle_sget(BProgram* prog, GList* lhconn)
+{
+        BConn* conn = lhconn->data;
+        BConnGet* data = conn->state_data;
+        ssize_t sent;
+
+        sent = send(conn->sock, data->buf->data, data->buf->len, 0);
+
+        /* Is there still some left to send? */
+        if (sent != data->buf->len) {
+                g_byte_array_remove_range(data->buf, 0, sent);
+                return;
+        }
+
+        /* Ok, we're done! */
+        conn->state = BCONN_STATE_GET2;
+}
 
 /*
  * Write the key back to the BCONN_STATE_PUT2 connection
@@ -766,6 +883,8 @@ void conn_handle_initial(BProgram* prog, GList* lhconn)
                 conn_close(prog, lhconn);
                 return;
         }
+
+        conn->cmd = cmd;
         
         /* Check the command */
         if (cmd == BERTHA_LIST) {
@@ -781,7 +900,7 @@ void conn_handle_initial(BProgram* prog, GList* lhconn)
 
                 /* Initialize the send buffer */
                 data->buf = g_byte_array_sized_new(CFG_LIST_BUFFER);
-        } else if (cmd == BERTHA_GET) {
+        } else if (cmd == BERTHA_GET || cmd == BERTHA_SGET) {
                 BConnGet* data = g_slice_new0(BConnGet);
 
                 /* Set new connection state */
@@ -790,11 +909,12 @@ void conn_handle_initial(BProgram* prog, GList* lhconn)
 
                 /* Initialize buffer */
                 data->buf = g_byte_array_sized_new(32);
-        } else if (cmd == BERTHA_PUT) {
+        } else if (cmd == BERTHA_PUT || cmd == BERTHA_SPUT) {
                 BConnPut* data = g_slice_new0(BConnPut);
 
                 /* Set new connection state */
-                conn->state = BCONN_STATE_PUT;
+                conn->state = cmd == BERTHA_PUT ? BCONN_STATE_PUT
+                                                        : BCONN_STATE_SPUT;
                 conn->state_data = data;
                 data->file_ready = FALSE;
                 data->socket_ready = FALSE;
@@ -807,7 +927,9 @@ void conn_handle_initial(BProgram* prog, GList* lhconn)
                 data->fd = mkstemp(data->tmp_fn->str);
                 g_assert(data->fd != -1);
                 fd_set_nonblocking(data->fd);
-                conn_log(conn, "PUT %s", data->tmp_fn->str);
+
+                if (cmd == BERTHA_PUT)
+                        conn_log(conn, "PUT %s", data->tmp_fn->str);
 
                 /* Set up the checksum */
                 data->checksum = g_checksum_new(G_CHECKSUM_SHA256);
@@ -891,6 +1013,14 @@ void check_fd_sets(BProgram* prog)
                         }
                         conn_handle_get2(prog, lhconn);
                 }
+                /* We can read the size of the file from the socket */
+                if (conn->state == BCONN_STATE_SPUT
+                                && FD_ISSET(conn->sock, &prog->r_fds)) 
+                        conn_handle_sput(prog, lhconn);
+                /* We can write the size of the file to the socket */
+                if (conn->state == BCONN_STATE_SGET
+                                && FD_ISSET(conn->sock, &prog->w_fds))
+                        conn_handle_sget(prog, lhconn);
         }
 }
 
@@ -946,7 +1076,14 @@ void reset_fd_sets(BProgram* prog)
                         if(!data->file_eos && !data->file_ready)
                                 fd_set_add(&prog->r_fds, data->fd,
                                                 &prog->highest_fd);
-                }
+                } /* We wait to read the size from the conn */
+                else if (conn->state == BCONN_STATE_SPUT)
+                        fd_set_add(&prog->r_fds, conn->sock,
+                                                &prog->highest_fd);
+                /* We wait to write the size of the file to the buffer */
+                else if (conn->state == BCONN_STATE_SGET)
+                        fd_set_add(&prog->w_fds, conn->sock,
+                                                &prog->highest_fd);
         }
 }
 
