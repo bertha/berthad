@@ -33,7 +33,6 @@ Clients
 ```
 See [py-bertha].
 
-[py-bertha]: http://github.com/bwesterb/py-bertha
 
 Running
 -------
@@ -46,3 +45,10 @@ Running
 * `tmp dir` is the directory which will contain the blobs while they are
    streamed to disk during a __PUT__.  The directory must be on the same
    mounting point as `data dir`.
+
+Protocol
+--------
+The protocol is described in [PROTOCOL.md].
+
+[py-bertha]: http://github.com/bwesterb/py-bertha
+[PROTOCOL.md]: https://github.com/bwesterb/berthad/blob/master/PROTOCOL.md
