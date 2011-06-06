@@ -26,7 +26,6 @@ Clients
 >>> c.put_str("Example blob")
 'a0869d836f643fae5d740ad4407c97e174d03169fd788fce690341d03f8d8f44'
 >>> list(c.list())
->>> list(c.list())
 ['a0869d836f643fae5d740ad4407c97e174d03169fd788fce690341d03f8d8f44']
 >>> c.get('a0869d836f643fae5d740ad4407c97e174d03169fd788fce690341d03f8d8f44').read()
 'Example blob'
