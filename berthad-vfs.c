@@ -462,6 +462,9 @@ void conn_accept(BProgram* prog)
 {
         BConn* conn = g_slice_new0(BConn);
         GString* human_addr;
+#ifdef SO_NOSIGPIPE
+        int opt, ret;
+#endif
 
         conn->n = prog->n_conns++;
         conn->cmd = BERTHA_NONE;
@@ -476,6 +479,15 @@ void conn_accept(BProgram* prog)
 
         /* set the socket to non-blocking */
         fd_set_nonblocking(conn->sock);
+
+#ifdef SO_NOSIGPIPE
+        /* if possible, prevent SIGPIPE signals being raised by closed
+         * sockets. */
+        opt = 1;
+        ret = setsockopt(conn->sock, SOL_SOCKET, SO_NOSIGPIPE,
+                                &opt, sizeof(opt));
+        g_assert(ret == 0);
+#endif
 
         /* store it */
         conn->state = BCONN_STATE_INITIAL;
