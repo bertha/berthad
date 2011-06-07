@@ -877,7 +877,17 @@ void conn_handle_sget(BProgram* prog, GList* lhconn)
         BConnGet* data = conn->state_data;
         ssize_t sent;
 
-        sent = send(conn->sock, data->buf->data, data->buf->len, 0);
+        sent = send(conn->sock, data->buf->data, data->buf->len, MSG_NOSIGNAL);
+
+        /* Check if the connection was unexpectedly closed */
+        if (sent == -1) {
+                if (errno == EPIPE) {
+                        conn_log(conn, "EPIPE");
+                        conn_close(prog, lhconn);
+                        return;
+                }
+                g_assert_not_reached();
+        }
 
         /* Is there still some left to send? */
         if (sent != data->buf->len) {
@@ -898,7 +908,17 @@ void conn_handle_put2(BProgram* prog, GList* lhconn)
         BConnPut* data = conn->state_data;
         ssize_t sent;
 
-        sent = send(conn->sock, data->buf->data, data->buf->len, 0);
+        sent = send(conn->sock, data->buf->data, data->buf->len, MSG_NOSIGNAL);
+
+        /* Check if the connection was unexpectedly closed */
+        if (sent == -1) {
+                if (errno == EPIPE) {
+                        conn_log(conn, "EPIPE");
+                        conn_close(prog, lhconn);
+                        return;
+                }
+                g_assert_not_reached();
+        }
 
         /* Is there still some left to send? */
         if (sent != data->buf->len) {
@@ -1124,7 +1144,7 @@ void conn_handle_list(BProgram* prog, GList* lhconn)
         BConn* conn = lhconn->data;
         BConnList* data = conn->state_data;
         ssize_t sent;
-        int flags = 0;
+        int flags = MSG_NOSIGNAL;
 
         /* Read directory names into the buffer */
         while ((data->dirs || data->cdir) && data->buf->len < CFG_LIST_BUFFER) {
@@ -1144,6 +1164,16 @@ void conn_handle_list(BProgram* prog, GList* lhconn)
 
         if(data->buf->len > 0) {
                 sent = send(conn->sock, data->buf->data, data->buf->len, flags);
+
+                /* Check if the connection was unexpectedly closed */
+                if (sent == -1) {
+                        if (errno == EPIPE) {
+                                conn_log(conn, "EPIPE");
+                                conn_close(prog, lhconn);
+                                return;
+                        }
+                        g_assert_not_reached();
+                }
 
                 g_assert(sent > 0);
 
