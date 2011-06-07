@@ -881,8 +881,8 @@ void conn_handle_sget(BProgram* prog, GList* lhconn)
 
         /* Check if the connection was unexpectedly closed */
         if (sent == -1) {
-                if (errno == EPIPE) {
-                        conn_log(conn, "EPIPE");
+                if (errno == EPIPE || errno == ECONNRESET) {
+                        conn_log(conn, errno == EPIPE ? "EPIPE" : "ECONNRESET");
                         conn_close(prog, lhconn);
                         return;
                 }
@@ -912,8 +912,8 @@ void conn_handle_put2(BProgram* prog, GList* lhconn)
 
         /* Check if the connection was unexpectedly closed */
         if (sent == -1) {
-                if (errno == EPIPE) {
-                        conn_log(conn, "EPIPE");
+                if (errno == EPIPE || errno == ECONNRESET) {
+                        conn_log(conn, errno == EPIPE ? "EPIPE" : "ECONNRESET");
                         conn_close(prog, lhconn);
                         return;
                 }
@@ -1167,8 +1167,9 @@ void conn_handle_list(BProgram* prog, GList* lhconn)
 
                 /* Check if the connection was unexpectedly closed */
                 if (sent == -1) {
-                        if (errno == EPIPE) {
-                                conn_log(conn, "EPIPE");
+                        if (errno == EPIPE || errno == ECONNRESET) {
+                                conn_log(conn, errno == EPIPE ? "EPIPE"
+                                                : "ECONNRESET");
                                 conn_close(prog, lhconn);
                                 return;
                         }
