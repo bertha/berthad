@@ -358,7 +358,7 @@ gchar* buf_to_hex (guint8* buf, gsize size)
         gssize i;
         char* str = g_slice_alloc(size * 2 + 1);
         
-        str[size* 2 + 1] = 0;
+        str[size* 2] = 0;
         
         for (i = 0; i < size; i++) {
                 str[2*i] = uint4_to_hex(buf[i] / 16);
