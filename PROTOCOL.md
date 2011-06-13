@@ -4,6 +4,7 @@ The Bertha protocol
 The Bertha server stores blobs of data.
 Blobs of data are accessed by their SHA-256 hashes: 
 the __key__ of a blob of data is its SHA-256 hash.
+All sizes send and received are 64 bit little endian unsigned integers.
 
 Commands
 --------
