@@ -75,6 +75,9 @@
  * for a BERTHA_SPUT and a BERTHA_PUT, we are waiting to write the key */
 #define BCONN_STATE_SENDN       5
 
+/* Intermediate stage */
+#define BCONN_STATE_NONE        255
+
 /*
  * Commands bytes in the bertha protocol
  */
@@ -480,6 +483,7 @@ void conn_sendn_free(BProgram* prog, GList* lhconn)
 
         g_slice_free(BConnSendN, data);
         conn->state_data = NULL;
+        conn->state = BCONN_STATE_NONE;
 }
 
 void conn_recvn_free(BProgram* prog, GList* lhconn)
@@ -492,6 +496,7 @@ void conn_recvn_free(BProgram* prog, GList* lhconn)
 
         g_slice_free(BConnRecvN, data);
         conn->state_data = NULL;
+        conn->state = BCONN_STATE_NONE;
 }
 
 void conn_list_free(BProgram* prog, GList* lhconn)
@@ -519,6 +524,8 @@ void conn_list_free(BProgram* prog, GList* lhconn)
         if (data->buf)
                 g_byte_array_unref(data->buf);
         g_slice_free(BConnList, data);
+        conn->state_data = NULL;
+        conn->state = BCONN_STATE_NONE;
 }
 
 void conn_put_free(BProgram* prog, GList* lhconn)
@@ -537,6 +544,7 @@ void conn_put_free(BProgram* prog, GList* lhconn)
                 g_byte_array_unref(data->buf);
         g_slice_free(BConnPut, data);
         conn->state_data = NULL;
+        conn->state = BCONN_STATE_NONE;
 }
 
 void conn_get_free(BProgram* prog, GList* lhconn)
@@ -550,6 +558,8 @@ void conn_get_free(BProgram* prog, GList* lhconn)
         if (data->pipe[1])
                 close(data->pipe[1]);
         g_slice_free(BConnGet, data);
+        conn->state_data = NULL;
+        conn->state = BCONN_STATE_NONE;
 }
 
 
@@ -583,7 +593,8 @@ void conn_close(BProgram* prog, GList* lhconn)
                 conn_recvn_free(prog, lhconn);
         else if (conn->state == BCONN_STATE_SENDN)
                 conn_sendn_free(prog, lhconn);
-        else if (conn->state == BCONN_STATE_INITIAL) {}
+        else if (conn->state == BCONN_STATE_INITIAL
+                        || conn->state == BCONN_STATE_NONE) {}
         else
                 g_assert_not_reached();
 
@@ -991,7 +1002,8 @@ void conn_size(BProgram* prog, GList* lhconn)
         /* Something failed.  We will assume the file does not exist. */
         if (ret == -1) {
                 g_assert(errno == ENOENT);
-                response = GUINT64_TO_LE(G_MAXUINT64);
+                conn_close(prog, lhconn);
+                return;
         } else
                 response = GUINT64_TO_LE(st.st_size);
 
