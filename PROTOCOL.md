@@ -17,6 +17,7 @@ single octet.  This is the __command byte__ and is one of
 - __3__ for __QUIT__, quits the server
 - __4__ for __SPUT__, adds a blob and give a hint of its size
 - __5__ for __SGET__, retrieves a blob and its size by its key
+- __6__ for __SIZE__, retreives the size of a blob by its key
 
 ### LIST
 Used to list all the keys.
@@ -66,3 +67,11 @@ Similar to __GET__.  The server additionally sends the size of the blob.
     connection.
 3.  The server sends the blob.
 4.  The server closes the connection.
+
+### SIZE
+Used to retrieve the size of a blob by its key. Also useful to check whether
+a blob exists without having to execute LIST.
+
+1.  The client sends the key to server.
+2.  The server sends the size of the blob, if it exists.
+3.  The server closes the connection.

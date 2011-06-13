@@ -50,6 +50,7 @@
  * GET   INITIAL => RECVN =>          GET
  * SGET  INITIAL => RECVN => SENDN => GET
  * QUIT  INITIAL
+ * SIZE  INITIAL => RECVN => SENDN
  */
 
 /* Connection has been accepted.  We wait for the command byte. */
@@ -66,7 +67,8 @@
 #define BCONN_STATE_GET         3
 
 /* For a BERTHA_SPUT, we are waiting to receive the length;
- * for a BERTHA_GET and a BERTHA_SGET, we are waiting to receive the key */
+ * for a BERTHA_GET, BERTHA_SGET and BERTHA_SIZE, we are waiting to receive
+ * the key */
 #define BCONN_STATE_RECVN       4
 
 /* For a BERTHA_SGET, we are waiting to write the length;
@@ -82,6 +84,7 @@
 #define BERTHA_QUIT     ((guint8)3)
 #define BERTHA_SPUT     ((guint8)4)
 #define BERTHA_SGET     ((guint8)5)
+#define BERTHA_SIZE     ((guint8)6)
 #define BERTHA_NONE     ((guint8)255)
 
 typedef struct {
@@ -236,7 +239,7 @@ typedef struct {
         /* bytes to send in total */
         size_t size;
 
-        /* For BERTHA_GETS used to store the BConnGet structure */
+        /* For BERTHA_SGET used to store the BConnGet structure */
         gpointer next;
 } BConnSendN;
 
@@ -639,7 +642,8 @@ void conn_sendn_init(BProgram* prog, GList* lhconn, gpointer buf, gsize size)
         data->buf = g_slice_alloc(data->size);
         memcpy(data->buf, buf, size);
 
-        if (conn->cmd == BERTHA_PUT || conn->cmd == BERTHA_SPUT) {
+        if (conn->cmd == BERTHA_PUT || conn->cmd == BERTHA_SPUT
+                        || conn->cmd == BERTHA_SIZE) {
                 g_assert(!conn->state_data);
         } else if (conn->cmd == BERTHA_SGET) {
                 g_assert(conn->state_data);
@@ -937,7 +941,8 @@ void conn_sendn_handle(BProgram* prog, GList* lhconn)
                 return;
 
         /* We're done! Transition to the next state.  */
-        if (conn->cmd == BERTHA_SPUT || conn->cmd == BERTHA_PUT) {
+        if (conn->cmd == BERTHA_SPUT || conn->cmd == BERTHA_PUT
+                        || conn->cmd == BERTHA_SIZE) {
                 /* We're completely done.  Close. */
                 shutdown(conn->sock, SHUT_RDWR);
                 conn_close(prog, lhconn);
@@ -954,6 +959,43 @@ void conn_sendn_handle(BProgram* prog, GList* lhconn)
                 conn_start_job(prog, conn, BJOB_FADVISE);
         } else
                 g_assert_not_reached();
+}
+
+/*
+ * Executed when we received the key in state RECVN.  Will transition
+ * into SENDN with the proper response.
+ */
+void conn_size(BProgram* prog, GList* lhconn)
+{
+        BConn* conn = lhconn->data;
+        BConnRecvN* data = conn->state_data;
+        guint64 response;
+        struct stat st;
+        char* hex_key;
+        GString* fn;
+        int ret;
+
+        /* Get the key and generate the filename */
+        hex_key = buf_to_hex(data->buf, 32);
+        fn = key_to_path(prog, hex_key);
+        conn_log(conn, "SIZE %s", hex_key);
+
+        /* Stat the file */
+        ret = stat(fn->str, &st);
+
+        /* Clean up RECVN state and other strings */
+        g_string_free(fn, TRUE);
+        g_slice_free1(65, hex_key);
+        conn_recvn_free(prog, lhconn);
+
+        /* Something failed.  We will assume the file does not exist. */
+        if (ret == -1) {
+                g_assert(errno == ENOENT);
+                response = GUINT64_TO_LE(G_MAXUINT64);
+        } else
+                response = GUINT64_TO_LE(st.st_size);
+
+        conn_sendn_init(prog, lhconn, &response, sizeof(response));
 }
 
 /*
@@ -987,6 +1029,8 @@ void conn_recvn_handle(BProgram* prog, GList* lhconn)
                 conn_put_init(prog, lhconn);
         } else if (conn->cmd == BERTHA_GET || conn->cmd == BERTHA_SGET) {
                 conn_get_init(prog, lhconn);
+        } else if (conn->cmd == BERTHA_SIZE) {
+                conn_size(prog, lhconn);
         } else
                 g_assert_not_reached();
 }
@@ -1337,7 +1381,8 @@ void conn_recvn_init(BProgram* prog, GList* lhconn)
         BConnRecvN* data = g_slice_new0(BConnRecvN);
 
         /* allocate the buffer */
-        if (conn->cmd == BERTHA_GET || conn->cmd == BERTHA_SGET)
+        if (conn->cmd == BERTHA_GET || conn->cmd == BERTHA_SGET
+                        || conn->cmd == BERTHA_SIZE)
                 data->size = 32; /* SHA-256 hash */
         else /* cmd == BERTHA_SPUT */
                 data->size = 8;  /* uint64 */
@@ -1377,7 +1422,7 @@ void conn_initial_handle(BProgram* prog, GList* lhconn)
         if (cmd == BERTHA_LIST) {
                 conn_list_init(prog, lhconn);
         } else if (cmd == BERTHA_GET || cmd == BERTHA_SGET
-                        || cmd == BERTHA_SPUT) {
+                        || cmd == BERTHA_SPUT || cmd == BERTHA_SIZE) {
                 conn_recvn_init(prog, lhconn);
         } else if (cmd == BERTHA_PUT) {
                 conn_put_init(prog, lhconn);
@@ -1436,8 +1481,8 @@ void check_fd_sets(BProgram* prog)
                                 data->file_ready = TRUE;
                         conn_put_handle(prog, lhconn);
                 }
-                /* We can read the key for the BERTHA_GET or BERTHA_GETS
-                 * or the size for the BERTHA_PUTS connection. */
+                /* We can read the key for the BERTHA_GET, BERTHA_SIZE or
+                 * BERTHA_SGET or the size for the BERTHA_SPUT connection. */
                 if(conn->state == BCONN_STATE_RECVN
                                 && FD_ISSET(conn->sock, &prog->r_fds))
                         conn_recvn_handle(prog, lhconn);
@@ -1453,7 +1498,7 @@ void check_fd_sets(BProgram* prog)
                         }
                         conn_get_handle(prog, lhconn);
                 }
-                /* For BERTHA_SGET, we can write the size
+                /* For BERTHA_SGET and BERTHA_PUT, we can write the size
                  * for BERTHA_PUT or BERTHA_SPUT, we can write the key */
                 if (conn->state == BCONN_STATE_SENDN)
                         conn_sendn_handle(prog, lhconn);
@@ -1505,11 +1550,12 @@ void reset_fd_sets(BProgram* prog)
                                 fd_set_add(&prog->r_fds, data->fd,
                                                 &prog->highest_fd);
                 } /* For BERTHA_SPUT we wait to read the size;
-                   * for BERTHA_GET and BERTHA_SGET we wait to read the key. */
+                   * for BERTHA_GET, BERTHA_SGET and BERTHA_SIZE we are waiting
+                   * to read the key. */
                 else if (conn->state == BCONN_STATE_RECVN)
                         fd_set_add(&prog->r_fds, conn->sock,
                                                 &prog->highest_fd);
-                /* For BERTHA_SGET we wait to send the size;
+                /* For BERTHA_SGET and BERTHA_SIZE we wait to send the size;
                  * for BERTHA_PUT and BERTHA_SPUT we wait to write the key. */
                 else if (conn->state == BCONN_STATE_SENDN)
                         fd_set_add(&prog->w_fds, conn->sock,
