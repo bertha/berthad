@@ -468,7 +468,7 @@ void conn_log(BConn* conn, const char* format, ...)
         va_end(arglist);
 
         /* Print our message */
-        printf("%ld %ld %s\n", conn->n, microts, msg->str);
+        printf("%zd %llu %s\n", conn->n, microts, msg->str);
 
         g_string_free(msg, TRUE);
 }
