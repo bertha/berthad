@@ -695,16 +695,16 @@ void conn_get_init(BProgram* prog, GList* lhconn)
         g_string_free(fn, TRUE);
         g_slice_free1(65, hex_key);
 
-        /* Advise the kernel on the access pattern */
-        ret = posix_fadvise(data->fd, 0, 0, POSIX_FADV_SEQUENTIAL);
-        g_assert(ret == 0);
-
         /* The file couldn't be opened - break */
         if(data->fd < 0) {
                 g_warning("GET Couldn't open file\n");
                 conn_close(prog, lhconn);
                 return;
         }
+
+        /* Advise the kernel on the access pattern */
+        ret = posix_fadvise(data->fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+        g_assert(ret == 0);
 
         /* Set file in non-blocking mode */
         fd_set_nonblocking(data->fd);
