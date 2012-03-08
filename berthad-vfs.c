@@ -1198,7 +1198,8 @@ check_if_done:
                 g_checksum_free(data->checksum);
                 data->checksum = NULL;
 
-                /* Move the temporary file into place */
+                /* Move the temporary file into place
+                 * NOTE This will override an existing file. */
                 target = key_to_path(prog, key_hex);
                 ret = rename(data->tmp_fn->str, target->str);
                 g_assert(ret == 0);
