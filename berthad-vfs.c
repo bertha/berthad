@@ -1023,11 +1023,15 @@ void conn_recvn_handle(BProgram* prog, GList* lhconn)
 
         received = recv(conn->sock, data->buf + data->size - data->left,
                         data->left, 0);
-        g_assert(received >= 0);
+        g_assert(received >= -1);
 
         /* Premature end of stream; ignore */
-        if (received == 0) {
-                g_warning("RECVN Premature end of stream\n");
+        if (received <= 0) {
+                if (received == -1) {
+                        g_warning("RECVN recv() error:\n");
+                        perror("recv");
+                } else
+                        g_warning("RECVN Premature end of stream\n");
                 conn_close(prog, lhconn);
                 return;
         }
@@ -1060,11 +1064,15 @@ void conn_sput_handle(BProgram* prog, GList* lhconn)
         guint64* size_ptr;
 
         received = recv(conn->sock, buf2, 8 - data->buf->len, 0);
-        g_assert(received >= 0);
+        g_assert(received >= -1);
 
         /* Premature end of stream: ignore */
-        if (received == 0) {
-                g_warning("SPUT Premature end of stream\n");
+        if (received <= 0) {
+                if (received == -1) {
+                        g_warning("SPUT recv() error:\n");
+                        perror("recv");
+                } else
+                        g_warning("SPUT Premature end of stream\n");
                 conn_close(prog, lhconn);
                 return;
         }
@@ -1120,7 +1128,14 @@ void conn_put_handle(BProgram* prog, GList* lhconn)
         if (data->socket_ready && data->buf->len < CFG_PUT_BUFFER) {
 read_some:
                 received = recv(conn->sock, buf2, CFG_PUT_BUFFER, 0);
-                g_assert(received >= 0);
+                g_assert(received >= -1);
+
+                if (received == -1) {
+                        g_warning("PUT recv() error:\n");
+                        perror("recv");
+                        conn_close(prog, lhconn);
+                        return;
+                }
 
                 prog->n_PUT_received += received;
                 data->socket_ready = FALSE;
@@ -1422,10 +1437,15 @@ void conn_initial_handle(BProgram* prog, GList* lhconn)
 
         /* Receive the first byte */
         received = recv(conn->sock, &cmd, 1, 0);
-        g_assert(received == 0 || received == 1);
+        g_assert(received == 0 || received == 1 || received == -1);
 
         /* Premature end of stream */
-        if (received == 0) {
+        if (received <= 0) {
+                if (received == -1) {
+                        g_warning("INITIAL recv() error:\n");
+                        perror("recv");
+                } else
+                        g_warning("INTIIAL premature end of stream\n");
                 conn_close(prog, lhconn);
                 return;
         }
