@@ -8,6 +8,7 @@
 #include <sys/types.h>
 #include <sys/socket.h>
 
+#include <inttypes.h>
 #include <stdlib.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -29,9 +30,6 @@
 #endif
 #ifndef CFG_PUT_BUFFER
 #define CFG_PUT_BUFFER 4096
-#endif
-#ifndef CFG_GET_BUFFER
-#define CFG_GET_BUFFER 65536
 #endif
 #ifndef CFG_DATADIR_WIDTH
 #define CFG_DATADIR_WIDTH 2
@@ -216,6 +214,9 @@ typedef struct {
 
         /* Can we read data from the file? */
         gboolean file_ready;
+
+        /* Can we splice data to the pipe? */
+        gboolean pipe_ready;
 
         /* The number of bytes in the pipe */
         size_t in_buffer;
@@ -684,6 +685,7 @@ void conn_get_init(BProgram* prog, GList* lhconn)
         /* Set new state */
         data->socket_ready = FALSE;
         data->file_ready = FALSE;
+        data->pipe_ready = FALSE;
         data->file_eos = FALSE;
         conn->state_data = data;
 
@@ -833,19 +835,17 @@ void conn_get_handle(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnGet* data = conn->state_data;
-        ssize_t spliced, to_splice;
+        ssize_t spliced;
 
-        /* Is there data to splice from the file to the pipe?  And is
-         * there enough room in the pipe?  Then splice some data! */
-        if (data->file_ready && data->in_buffer < CFG_GET_BUFFER) {
+        /* Is there data to splice from the file to the pipe?  And is there
+         * room in the pipe?  Then splice some data! */
+        if (data->file_ready && data->pipe_ready) {
 splice_some_to_pipe:
-                to_splice = CFG_GET_BUFFER - data->in_buffer;
-
                 /* Splice from file to pipe */
                 spliced = splice(data->fd, NULL, data->pipe[1], NULL,
-                                 to_splice, SPLICE_F_MOVE |
-                                            SPLICE_F_NONBLOCK |
-                                            SPLICE_F_MORE);
+                                 65536, SPLICE_F_MOVE |
+                                        SPLICE_F_NONBLOCK |
+                                        SPLICE_F_MORE);
 
                 if (spliced == -1) {
                         if (errno == EAGAIN) {
@@ -858,6 +858,7 @@ splice_some_to_pipe:
                 }
 
                 data->file_ready = FALSE;
+                data->pipe_ready = FALSE;
 
                 /* Check for end of file */
                 if (spliced == 0) {
@@ -908,7 +909,7 @@ splice_some_from_pipe:
                 data->in_buffer -= spliced;
 
                 /* Check if we have enough room to read from the file*/
-                if (data->file_ready)
+                if (data->file_ready && data->pipe_ready)
                         goto splice_some_to_pipe;
                 goto check_if_done;
         }
@@ -1506,9 +1507,10 @@ void check_fd_sets(BProgram* prog)
                         if(!data->file_eos
                                         && FD_ISSET(data->fd, &prog->r_fds))
                                 data->file_ready = TRUE;
-                        if(FD_ISSET(conn->sock, &prog->w_fds)) {
+                        if(FD_ISSET(conn->sock, &prog->w_fds))
                                 data->socket_ready = TRUE;
-                        }
+                        if(FD_ISSET(data->pipe[1], &prog->w_fds))
+                                data->pipe_ready = TRUE;
                         conn_get_handle(prog, lhconn);
                 }
                 /* For BERTHA_SGET and BERTHA_PUT, we can write the size
@@ -1559,9 +1561,14 @@ void reset_fd_sets(BProgram* prog)
                         if(!data->socket_ready)
                                 fd_set_add(&prog->w_fds, conn->sock,
                                                 &prog->highest_fd);
-                        if(!data->file_eos && !data->file_ready)
-                                fd_set_add(&prog->r_fds, data->fd,
-                                                &prog->highest_fd);
+                        if(!data->file_eos) {
+                                if(!data->pipe_ready)
+                                        fd_set_add(&prog->w_fds, data->pipe[1],
+                                                        &prog->highest_fd);
+                                if(!data->file_ready)
+                                        fd_set_add(&prog->r_fds, data->fd,
+                                                        &prog->highest_fd);
+                        }
                 } /* For BERTHA_SPUT we wait to read the size;
                    * for BERTHA_GET, BERTHA_SGET and BERTHA_SIZE we are waiting
                    * to read the key. */
