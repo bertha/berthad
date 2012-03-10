@@ -37,7 +37,7 @@
 #define CFG_DATADIR_WIDTH 2
 #endif
 #ifndef CFG_DATADIR_DEPTH
-#define CFG_DATADIR_DEPTH 2
+#define CFG_DATADIR_DEPTH 1
 #endif
 
 /*
