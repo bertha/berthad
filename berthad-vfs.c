@@ -49,6 +49,7 @@
  * SGET  INITIAL => RECVN => SENDN => GET
  * QUIT  INITIAL
  * SIZE  INITIAL => RECVN => SENDN
+ * STATS INITIAL => SENDN
  */
 
 /* Connection has been accepted.  We wait for the command byte. */
@@ -86,6 +87,7 @@
 #define BERTHA_SPUT     ((guint8)4)
 #define BERTHA_SGET     ((guint8)5)
 #define BERTHA_SIZE     ((guint8)6)
+#define BERTHA_STATS    ((guint8)7)
 #define BERTHA_NONE     ((guint8)255)
 
 typedef struct {
@@ -110,7 +112,8 @@ typedef struct {
         int highest_fd;
 
         /* statistics */
-        gsize n_conns; /* number of connections accepted */
+        gsize n_conns_accepted; /* number of connections accepted */
+        gsize n_conns_active; /* number of currently active connections */
         gsize n_GET_sent; /* number of bytes sent for GETs */
         gsize n_PUT_received; /* number of bytes received for PUTs */
         gsize n_cycle; /* number of non-trivial main loop cycles */
@@ -610,6 +613,7 @@ void conn_close(BProgram* prog, GList* lhconn)
 
         /* Free the connection */
         prog->conns = g_list_delete_link(prog->conns, lhconn);
+        prog->n_conns_active--;
         g_slice_free(BConn, conn);
 }
 
@@ -655,7 +659,8 @@ void conn_sendn_init(BProgram* prog, GList* lhconn, gpointer buf, gsize size)
         memcpy(data->buf, buf, size);
 
         if (conn->cmd == BERTHA_PUT || conn->cmd == BERTHA_SPUT
-                        || conn->cmd == BERTHA_SIZE) {
+                        || conn->cmd == BERTHA_SIZE
+                        || conn->cmd == BERTHA_STATS) {
                 g_assert(!conn->state_data);
         } else if (conn->cmd == BERTHA_SGET) {
                 g_assert(conn->state_data);
@@ -800,7 +805,7 @@ void conn_accept(BProgram* prog)
         int opt, ret;
 #endif
 
-        conn->n = prog->n_conns++;
+        conn->n = prog->n_conns_accepted++;
         conn->cmd = BERTHA_NONE;
         conn->addrlen = sizeof(conn->addr);
 
@@ -826,6 +831,7 @@ void conn_accept(BProgram* prog)
         /* store it */
         conn->state = BCONN_STATE_INITIAL;
         prog->conns = g_list_prepend(prog->conns, conn);
+        prog->n_conns_active++;
 }
 
 /*
@@ -954,7 +960,8 @@ void conn_sendn_handle(BProgram* prog, GList* lhconn)
 
         /* We're done! Transition to the next state.  */
         if (conn->cmd == BERTHA_SPUT || conn->cmd == BERTHA_PUT
-                        || conn->cmd == BERTHA_SIZE) {
+                        || conn->cmd == BERTHA_SIZE
+                        || conn->cmd == BERTHA_STATS) {
                 /* We're completely done.  Close. */
                 shutdown(conn->sock, SHUT_RDWR);
                 conn_close(prog, lhconn);
@@ -971,6 +978,24 @@ void conn_sendn_handle(BProgram* prog, GList* lhconn)
                 conn_start_job(prog, conn, BJOB_FADVISE);
         } else
                 g_assert_not_reached();
+}
+
+/*
+ * Executed when we received the command byte and found out it is
+ * BERTHA_STATS.  We will collect the statistics and transition to
+ * SENDN to send them.
+ */
+void conn_stats(BProgram* prog, GList* lhconn)
+{
+        guint64 response[5];
+
+        response[0] = GUINT64_TO_LE(prog->n_cycle);
+        response[1] = GUINT64_TO_LE(prog->n_GET_sent);
+        response[2] = GUINT64_TO_LE(prog->n_PUT_received);
+        response[3] = GUINT64_TO_LE(prog->n_conns_accepted);
+        response[4] = GUINT64_TO_LE(prog->n_conns_active);
+
+        conn_sendn_init(prog, lhconn, &response, sizeof(response));
 }
 
 /*
@@ -1469,6 +1494,8 @@ void conn_initial_handle(BProgram* prog, GList* lhconn)
                                 lhconn2 = g_list_next(lhconn2))
                         conn_close(prog, lhconn2);
                 prog->running = FALSE;
+        } else if (cmd == BERTHA_STATS) {
+                conn_stats(prog, lhconn);
         } else
                 conn_close(prog, lhconn);
 }
