@@ -1168,7 +1168,7 @@ read_some:
                          * put the rest in on data->buf */
                         if (written != received)
                                 g_byte_array_append(data->buf,
-                                                buf2 + received - written,
+                                                buf2 + written,
                                                 received - written);
                         else
                                 goto check_if_done;
