@@ -286,7 +286,7 @@ char uint4_to_hex (guint8 byte)
 }
 
 /*
- * Returns whether the path specified is a direcotry
+ * Returns whether the path specified is a directory
  */
 gboolean path_is_dir (char* path)
 {
@@ -1164,14 +1164,15 @@ read_some:
 
                         data->file_ready = FALSE;
 
+                        if (written == received)
+                                goto check_if_done;
+
                         /* If we couldn't write everything,
                          * put the rest in on data->buf */
-                        if (written != received)
-                                g_byte_array_append(data->buf,
-                                                buf2 + received - written,
-                                                received - written);
-                        else
-                                goto check_if_done;
+                        g_byte_array_append(data->buf,
+                                        buf2 + written,
+                                        received - written);
+                        return;
                 }
 
                 /* Copy the received data to data->buf */
