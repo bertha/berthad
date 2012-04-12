@@ -286,7 +286,7 @@ char uint4_to_hex (guint8 byte)
 }
 
 /*
- * Returns whether the path specified is a direcotry
+ * Returns whether the path specified is a directory
  */
 gboolean path_is_dir (char* path)
 {
