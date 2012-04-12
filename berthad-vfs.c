@@ -1445,7 +1445,7 @@ void conn_initial_handle(BProgram* prog, GList* lhconn)
                         g_warning("INITIAL recv() error:\n");
                         perror("recv");
                 } else
-                        g_warning("INTIIAL premature end of stream\n");
+                        g_warning("INITIAL premature end of stream\n");
                 conn_close(prog, lhconn);
                 return;
         }
