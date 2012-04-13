@@ -234,8 +234,8 @@ typedef struct {
 #endif
 
 #ifdef USE_SENDFILE
-	/* The number of bytes read and transferred from the file */
-	size_t sent;
+        /* The number of bytes read and transferred from the file */
+        size_t sent;
 #endif
 
         /* Can we send data over the socket? */
@@ -989,9 +989,9 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
         BConn* conn = lhconn->data;
         BConnGet* data = conn->state_data;
 
-	if(data->file_ready && data->socket_ready) {
-		off_t sent;
-		int res = sendfile(data->fd, conn->sock, data->sent, 0, NULL, &sent, SF_NODISKIO | SF_MNOWAIT);
+        if(data->file_ready && data->socket_ready) {
+                off_t sent;
+                int res = sendfile(data->fd, conn->sock, data->sent, 0, NULL, &sent, SF_NODISKIO | SF_MNOWAIT);
                 if (res == -1) {
                         /* socket has been closed */
                         if (errno == EPIPE) {
@@ -1000,19 +1000,19 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
                                 return;
                         }
 
-			if(errno == EAGAIN) {
-				data->socket_ready = FALSE;
-			} else if(errno == EBUSY) {
-				data->file_ready = FALSE;
-			} else {
-				perror("sendfile");
-				g_error("Sendfile failed?!\n");
-			}
+                        if(errno == EAGAIN) {
+                                data->socket_ready = FALSE;
+                        } else if(errno == EBUSY) {
+                                data->file_ready = FALSE;
+                        } else {
+                                perror("sendfile");
+                                g_error("Sendfile failed?!\n");
+                        }
                 } else
-			data->file_eos = TRUE;
-		data->sent += sent;
+                        data->file_eos = TRUE;
+                data->sent += sent;
                 prog->n_GET_sent += sent;
-	}
+        }
 
         if (data->file_eos) {
                 /* We're done! */
@@ -1025,10 +1025,10 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
 void conn_get_handle(BProgram* prog, GList* lhconn)
 {
 #ifdef USE_SPLICE
-	conn_get_handle__splice(prog, lhconn);
+        conn_get_handle__splice(prog, lhconn);
 #else
 #ifdef USE_SENDFILE
-	conn_get_handle__sendfile(prog, lhconn);
+        conn_get_handle__sendfile(prog, lhconn);
 #endif
 #endif
 }
