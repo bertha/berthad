@@ -982,7 +982,7 @@ check_if_done:
 
 #ifdef USE_SENDFILE
 /*
- * Splice data from the file into a pipe and from that pipe into the socket
+ * Use sendfile() to transfer data from the file to the socket
  */
 static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
 {
