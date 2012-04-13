@@ -19,6 +19,7 @@ single octet.  This is the __command byte__ and is one of
 - __4__ for __SPUT__, adds a blob and give a hint of its size
 - __5__ for __SGET__, retrieves a blob and its size by its key
 - __6__ for __SIZE__, retreives the size of a blob by its key
+- __7__ for __STATS__, retreives some statistical counters
 
 ### LIST
 Used to list all the keys.
@@ -76,3 +77,14 @@ a blob exists without having to execute LIST.
 1.  The client sends the key to server.
 2.  The server sends the size of the blob, if it exists.
 3.  The server closes the connection.
+
+### STATS
+Used to retrieve some counter.
+
+1. The server sends five little-endian 64bit unsigned integers:
+   1.  `n_cycle`: the number of non-trivial cycles in the mainloop;
+   2.  `n_GET_sent`: the total number of bytes sent for (S)GET requests;
+   3.  `n_PUT_received`: the total number of bytes received for (S)PUT requests;
+   4.  `n_conns_accepted`: the total number of connections accepted and
+   5.  `n_conns_active`: the number of currently active connections.
+2. The server closes the connection.
