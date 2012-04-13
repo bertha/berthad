@@ -1,7 +1,9 @@
 #define _GNU_SOURCE
 
 #include <arpa/inet.h>
-#include <linux/falloc.h>
+#ifdef __FreeBSD__
+#include <netinet/in.h>
+#endif
 
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -36,6 +38,22 @@
 #endif
 #ifndef CFG_DATADIR_DEPTH
 #define CFG_DATADIR_DEPTH 1
+#endif
+
+#ifdef __FreeBSD__
+#define USE_SENDFILE
+#else
+#define USE_SPLICE
+#define USE_FALLOCATE
+#define USE_FADVISE
+#endif
+
+#ifdef USE_FALLOCATE
+#include <linux/falloc.h>
+#endif
+
+#if defined(USE_FALLOCATE) || defined(USE_FADVISE)
+#define USE_THREADS
 #endif
 
 /*
@@ -118,8 +136,10 @@ typedef struct {
         gsize n_PUT_received; /* number of bytes received for PUTs */
         gsize n_cycle; /* number of non-trivial main loop cycles */
 
+#ifdef USE_THREADS
         /* threadpool for async. fadvise and fallocate */
         GThreadPool* threadpool;
+#endif
 } BProgram;
 
 typedef struct {
@@ -143,12 +163,14 @@ typedef struct {
         /* the command send by the client */
         guint8 cmd;
 
+#ifdef USE_THREADS
         /* Number of threads working on this object */
         gint n_threads;
 
         /* Condition/mutex pair  used to join threads, if there are any. */
         GCond* threads_cond;
         GMutex* threads_mutex;
+#endif
 } BConn;
 
 typedef struct {
@@ -206,8 +228,15 @@ typedef struct {
         /* The file descriptor of the file to send */
         int fd;
 
+#ifdef USE_SPLICE
         /* The pipe used to splice from the file to the socket */
         int pipe[2];
+#endif
+
+#ifdef USE_SENDFILE
+	/* The number of bytes read and transferred from the file */
+	size_t sent;
+#endif
 
         /* Can we send data over the socket? */
         gboolean socket_ready;
@@ -218,11 +247,13 @@ typedef struct {
         /* Can we read data from the file? */
         gboolean file_ready;
 
+#ifdef USE_SPLICE
         /* Can we splice data to the pipe? */
         gboolean pipe_ready;
 
         /* The number of bytes in the pipe */
         size_t in_buffer;
+#endif
 } BConnGet;
 
 typedef struct {
@@ -250,6 +281,7 @@ typedef struct {
         gpointer next;
 } BConnSendN;
 
+#ifdef USE_THREADS
 /* Call fadvise for file read for GET async, since it may block */
 #define BJOB_FADVISE    0
 
@@ -270,6 +302,7 @@ typedef struct {
         /* pointer to the connection */
         BConn* conn;
 } BJobConn;
+#endif
 
 
 /*
@@ -557,10 +590,12 @@ void conn_get_free(BProgram* prog, GList* lhconn)
         BConnGet* data = conn->state_data;
         if (data->fd)
                 close(data->fd);
+#ifdef USE_SPLICE
         if (data->pipe[0])
                 close(data->pipe[0]);
         if (data->pipe[1])
                 close(data->pipe[1]);
+#endif
         g_slice_free(BConnGet, data);
         conn->state_data = NULL;
         conn->state = BCONN_STATE_NONE;
@@ -574,6 +609,7 @@ void conn_close(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
 
+#ifdef USE_THREADS
         /* Check if there are still threads working on this connection.
          * And if so, wait on them */
         if (conn->threads_mutex != NULL) {
@@ -584,6 +620,7 @@ void conn_close(BProgram* prog, GList* lhconn)
                 g_mutex_unlock(conn->threads_mutex);
                 g_assert(conn->n_threads == 0);
         }
+#endif
 
         conn_log(conn, "close");
 
@@ -602,10 +639,12 @@ void conn_close(BProgram* prog, GList* lhconn)
         else
                 g_assert_not_reached();
 
+#ifdef USE_THREADS
         if (conn->threads_mutex)
                 g_mutex_free(conn->threads_mutex);
         if (conn->threads_cond)
                 g_cond_free(conn->threads_cond);
+#endif
 
         /* Close the socket */
         if (conn->sock)
@@ -617,6 +656,7 @@ void conn_close(BProgram* prog, GList* lhconn)
         g_slice_free(BConn, conn);
 }
 
+#ifdef USE_THREADS
 /*
  * Starts a BJOB for a connection
  * Used for async. fallocate and fadvise
@@ -646,6 +686,7 @@ void  conn_start_job (BProgram* prog, BConn* conn, guint8 type)
         if (err)
                 g_error("g_thread_pool_push: %s", err->message);
 }
+#endif
 
 void conn_sendn_init(BProgram* prog, GList* lhconn, gpointer buf, gsize size)
 {
@@ -690,7 +731,9 @@ void conn_get_init(BProgram* prog, GList* lhconn)
         /* Set new state */
         data->socket_ready = FALSE;
         data->file_ready = FALSE;
+#ifdef USE_SPLICE
         data->pipe_ready = FALSE;
+#endif
         data->file_eos = FALSE;
         conn->state_data = data;
 
@@ -709,17 +752,21 @@ void conn_get_init(BProgram* prog, GList* lhconn)
                 return;
         }
 
+#ifdef USE_FADVISE
         /* Advise the kernel on the access pattern */
         ret = posix_fadvise(data->fd, 0, 0, POSIX_FADV_SEQUENTIAL);
         g_assert(ret == 0);
+#endif
 
         /* Set file in non-blocking mode */
         fd_set_nonblocking(data->fd);
 
+#ifdef USE_SPLICE
         /* Set up a pipeline. We will splice from fd to pipe[0] and
          * then from pipe[1] to sock. */
         ret = pipe2(data->pipe, O_NONBLOCK);
         g_assert(ret == 0);
+#endif
 
         /* If the original command is SGET, we will first send the
          * size of the file */
@@ -788,8 +835,10 @@ void conn_put_init(BProgram* prog, GList* lhconn)
                 conn_log(conn, "SPUT %s %ld", data->tmp_fn->str,
                                 data->advised_size);
 
+#ifdef USE_FALLOCATE
                 /* Pre-allocate the file in a separate thread */
                 conn_start_job(prog, conn, BJOB_FALLOCATE);
+#endif
         } else
                 g_assert_not_reached();
 }
@@ -834,10 +883,11 @@ void conn_accept(BProgram* prog)
         prog->n_conns_active++;
 }
 
+#ifdef USE_SPLICE
 /*
  * Splice data from the file into a pipe and from that pipe into the socket
  */
-void conn_get_handle(BProgram* prog, GList* lhconn)
+static inline void conn_get_handle__splice(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnGet* data = conn->state_data;
@@ -928,6 +978,60 @@ check_if_done:
                 conn_close(prog, lhconn);
         }
 }
+#endif
+
+#ifdef USE_SENDFILE
+/*
+ * Splice data from the file into a pipe and from that pipe into the socket
+ */
+static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
+{
+        BConn* conn = lhconn->data;
+        BConnGet* data = conn->state_data;
+
+	if(data->file_ready && data->socket_ready) {
+		off_t sent;
+		int res = sendfile(data->fd, conn->sock, data->sent, 0, NULL, &sent, SF_NODISKIO | SF_MNOWAIT);
+                if (res == -1) {
+                        /* socket has been closed */
+                        if (errno == EPIPE) {
+                                conn_log(conn, "EPIPE");
+                                conn_close(prog, lhconn);
+                                return;
+                        }
+
+			if(errno == EAGAIN) {
+				data->socket_ready = FALSE;
+			} else if(errno == EBUSY) {
+				data->file_ready = FALSE;
+			} else {
+				perror("sendfile");
+				g_error("Sendfile failed?!\n");
+			}
+                } else
+			data->file_eos = TRUE;
+		data->sent += sent;
+                prog->n_GET_sent += sent;
+	}
+
+        if (data->file_eos) {
+                /* We're done! */
+                shutdown(conn->sock, SHUT_RDWR);
+                conn_close(prog, lhconn);
+        }
+}
+#endif
+
+void conn_get_handle(BProgram* prog, GList* lhconn)
+{
+#ifdef USE_SPLICE
+	conn_get_handle__splice(prog, lhconn);
+#else
+#ifdef USE_SENDFILE
+	conn_get_handle__sendfile(prog, lhconn);
+#endif
+#endif
+}
 
 /*
  * For BERTHA_PUT and BERTHA_SPUT, send the key and for BERTHA_SGET
@@ -972,10 +1076,12 @@ void conn_sendn_handle(BProgram* prog, GList* lhconn)
                 conn->state_data = ndata;
                 conn->state = BCONN_STATE_GET;
 
+#ifdef USE_FADVISE
                 /* We call posix_fadvise with POSIX_FADV_WILLNEED in a
                  * separate thread, since it may block. */
                 /* TODO do this call earlier on */
                 conn_start_job(prog, conn, BJOB_FADVISE);
+#endif
         } else
                 g_assert_not_reached();
 }
@@ -1129,9 +1235,11 @@ got_size:
 
                 conn_log(conn, "SPUT %s %ld", data->tmp_fn->str, size);
 
+#ifdef USE_FALLOCATE
                 /* Pre-allocate the file in a separate thread */
                 data->advised_size = size;
                 conn_start_job(prog, conn, BJOB_FALLOCATE);
+#endif
 
                 conn->state = BCONN_STATE_PUT;
         }
@@ -1376,9 +1484,11 @@ void conn_list_handle(BProgram* prog, GList* lhconn)
                 g_slice_free1(32, key);
         }
 
+#ifdef MSG_MORE
         /* Try to send it */
         if (data->dirs || data->cdir)
                 flags |= MSG_MORE;
+#endif
 
         if(data->buf->len > 0) {
                 sent = send(conn->sock, data->buf->data, data->buf->len, flags);
@@ -1557,8 +1667,10 @@ void check_fd_sets(BProgram* prog)
                                 data->file_ready = TRUE;
                         if(FD_ISSET(conn->sock, &prog->w_fds))
                                 data->socket_ready = TRUE;
+#ifdef USE_SPLICE
                         if(FD_ISSET(data->pipe[1], &prog->w_fds))
                                 data->pipe_ready = TRUE;
+#endif
                         conn_get_handle(prog, lhconn);
                 }
                 /* For BERTHA_SGET and BERTHA_PUT, we can write the size
@@ -1610,9 +1722,11 @@ void reset_fd_sets(BProgram* prog)
                                 fd_set_add(&prog->w_fds, conn->sock,
                                                 &prog->highest_fd);
                         if(!data->file_eos) {
+#ifdef USE_SPLICE
                                 if(!data->pipe_ready)
                                         fd_set_add(&prog->w_fds, data->pipe[1],
                                                         &prog->highest_fd);
+#endif
                                 if(!data->file_ready)
                                         fd_set_add(&prog->r_fds, data->fd,
                                                         &prog->highest_fd);
@@ -1631,6 +1745,7 @@ void reset_fd_sets(BProgram* prog)
         }
 }
 
+#ifdef USE_FADVISE
 /*
  * Advices the kernel to readahead some data on a file being spliced.
  */
@@ -1643,7 +1758,9 @@ void job_fadvise(BJobConn* job)
         ret = posix_fadvise(data->fd, 0, 0, POSIX_FADV_WILLNEED);
         g_assert(ret == 0);
 }
+#endif
 
+#ifdef USE_FALLOCATE
 /*
  * Preallocates a file for a PUT
  */
@@ -1656,7 +1773,9 @@ void job_fallocate(BJobConn* job)
         ret = fallocate(data->fd, FALLOC_FL_KEEP_SIZE, 0, data->advised_size);
         g_assert(ret == 0);
 }
+#endif
 
+#ifdef USE_THREADS
 /*
  * Entry of jobs started at the threadpool.
  */
@@ -1684,6 +1803,7 @@ void threadpool_entry(gpointer _job, gpointer unused)
         } else
                 g_assert_not_reached();
 }
+#endif
 
 int main (int argc, char** argv)
 {
@@ -1693,8 +1813,10 @@ int main (int argc, char** argv)
         int ret;
         int optval;
 
+#ifdef USE_THREADS
         /* Initialize GLib threads */
         g_thread_init(NULL);
+#endif
 
         /* Check number of arguments */
         if (argc != 5) {
@@ -1716,9 +1838,11 @@ int main (int argc, char** argv)
         g_assert(path_is_dir(prog.dataPath));
         g_assert(path_is_dir(prog.tmpPath));
 
+#ifdef USE_THREADS
         /* Initialize thread_pool */
         prog.threadpool = g_thread_pool_new(threadpool_entry, NULL,
                                                         -1, FALSE, NULL);
+#endif
 
         /* Resolve hostname */
         memset(&hints, 0, sizeof(struct addrinfo));
@@ -1796,7 +1920,9 @@ int main (int argc, char** argv)
                 check_fd_sets(&prog);
         }
 
+#ifdef USE_THREADS
         g_thread_pool_free(prog.threadpool, FALSE, TRUE);
+#endif
 
         return 0;
 }
