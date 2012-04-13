@@ -1378,7 +1378,7 @@ void conn_list_handle(BProgram* prog, GList* lhconn)
 
         /* Try to send it */
         if (data->dirs || data->cdir)
-                flags = MSG_MORE;
+                flags |= MSG_MORE;
 
         if(data->buf->len > 0) {
                 sent = send(conn->sock, data->buf->data, data->buf->len, flags);
@@ -1471,7 +1471,7 @@ void conn_initial_handle(BProgram* prog, GList* lhconn)
                         g_warning("INITIAL recv() error:\n");
                         perror("recv");
                 } else
-                        g_warning("INTIIAL premature end of stream\n");
+                        g_warning("INITIAL premature end of stream\n");
                 conn_close(prog, lhconn);
                 return;
         }
