@@ -991,7 +991,8 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
 
         if(data->file_ready && data->socket_ready) {
                 off_t sent;
-                int res = sendfile(data->fd, conn->sock, data->n_sent, 0, NULL, &sent, SF_NODISKIO | SF_MNOWAIT);
+                int res = sendfile(data->fd, conn->sock, data->n_sent, 0, NULL,
+												&sent, SF_NODISKIO | SF_MNOWAIT);
                 if (res == -1) {
                         /* socket has been closed */
                         if (errno == EPIPE) {
