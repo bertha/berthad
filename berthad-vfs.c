@@ -235,7 +235,7 @@ typedef struct {
 
 #ifdef USE_SENDFILE
         /* The number of bytes read and transferred from the file */
-        size_t sent;
+        size_t n_sent;
 #endif
 
         /* Can we send data over the socket? */
@@ -991,7 +991,7 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
 
         if(data->file_ready && data->socket_ready) {
                 off_t sent;
-                int res = sendfile(data->fd, conn->sock, data->sent, 0, NULL, &sent, SF_NODISKIO | SF_MNOWAIT);
+                int res = sendfile(data->fd, conn->sock, data->n_sent, 0, NULL, &sent, SF_NODISKIO | SF_MNOWAIT);
                 if (res == -1) {
                         /* socket has been closed */
                         if (errno == EPIPE) {
@@ -1010,7 +1010,7 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
                         }
                 } else
                         data->file_eos = TRUE;
-                data->sent += sent;
+                data->n_sent += sent;
                 prog->n_GET_sent += sent;
         }
 
