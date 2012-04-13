@@ -1378,7 +1378,7 @@ void conn_list_handle(BProgram* prog, GList* lhconn)
 
         /* Try to send it */
         if (data->dirs || data->cdir)
-                flags = MSG_MORE;
+                flags |= MSG_MORE;
 
         if(data->buf->len > 0) {
                 sent = send(conn->sock, data->buf->data, data->buf->len, flags);
