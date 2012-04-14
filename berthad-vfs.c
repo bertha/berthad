@@ -1,8 +1,36 @@
 #define _GNU_SOURCE
 
+#ifndef CFG_BACKLOG
+# define CFG_BACKLOG 10
+#endif
+#ifndef CFG_LIST_BUFFER
+# define CFG_LIST_BUFFER 1280
+#endif
+#ifndef CFG_PUT_BUFFER
+# define CFG_PUT_BUFFER 4096
+#endif
+#ifndef CFG_DATADIR_WIDTH
+# define CFG_DATADIR_WIDTH 2
+#endif
+#ifndef CFG_DATADIR_DEPTH
+# define CFG_DATADIR_DEPTH 1
+#endif
+
+#ifdef __FreeBSD__
+# define USE_SENDFILE
+#else
+# define USE_SPLICE
+# define USE_FALLOCATE
+# define USE_FADVISE
+#endif /* __FreeBSD__ */
+
+#if defined(USE_FALLOCATE) || defined(USE_FADVISE)
+# define USE_THREADS
+#endif
+
 #include <arpa/inet.h>
 #ifdef __FreeBSD__
-#include <netinet/in.h>
+# include <netinet/in.h>
 #endif
 
 #include <sys/stat.h>
@@ -24,37 +52,10 @@
 
 #include <glib.h>
 
-#ifndef CFG_BACKLOG
-#define CFG_BACKLOG 10
-#endif
-#ifndef CFG_LIST_BUFFER
-#define CFG_LIST_BUFFER 1280
-#endif
-#ifndef CFG_PUT_BUFFER
-#define CFG_PUT_BUFFER 4096
-#endif
-#ifndef CFG_DATADIR_WIDTH
-#define CFG_DATADIR_WIDTH 2
-#endif
-#ifndef CFG_DATADIR_DEPTH
-#define CFG_DATADIR_DEPTH 1
-#endif
-
-#ifdef __FreeBSD__
-#define USE_SENDFILE
-#else
-#define USE_SPLICE
-#define USE_FALLOCATE
-#define USE_FADVISE
-#endif
-
 #ifdef USE_FALLOCATE
-#include <linux/falloc.h>
+# include <linux/falloc.h>
 #endif
 
-#if defined(USE_FALLOCATE) || defined(USE_FADVISE)
-#define USE_THREADS
-#endif
 
 /*
  * States of connections
@@ -131,9 +132,9 @@ typedef struct {
 
         /* statistics */
         gsize n_conns_accepted; /* number of connections accepted */
-        gsize n_conns_active; /* number of currently active connections */
-        gsize n_GET_sent; /* number of bytes sent for GETs */
-        gsize n_PUT_received; /* number of bytes received for PUTs */
+        gsize n_conns_active;   /* number of currently active connections */
+        gsize n_GET_sent;       /* number of bytes sent for GETs */
+        gsize n_PUT_received;   /* number of bytes received for PUTs */
         gsize n_cycle; /* number of non-trivial main loop cycles */
 
 #ifdef USE_THREADS
@@ -170,7 +171,7 @@ typedef struct {
         /* Condition/mutex pair  used to join threads, if there are any. */
         GCond* threads_cond;
         GMutex* threads_mutex;
-#endif
+#endif /* USE_THREADS */
 } BConn;
 
 typedef struct {
@@ -241,19 +242,19 @@ typedef struct {
         /* Can we send data over the socket? */
         gboolean socket_ready;
 
-        /* Is the file depleted? */
-        gboolean file_eos;
-
         /* Can we read data from the file? */
         gboolean file_ready;
 
 #ifdef USE_SPLICE
+        /* Is the file depleted? */
+        gboolean file_eos;
+
         /* Can we splice data to the pipe? */
         gboolean pipe_ready;
 
         /* The number of bytes in the pipe */
         size_t in_buffer;
-#endif
+#endif /* USE_SPLICE */
 } BConnGet;
 
 typedef struct {
@@ -302,13 +303,13 @@ typedef struct {
         /* pointer to the connection */
         BConn* conn;
 } BJobConn;
-#endif
+#endif /* USE_THREADS */
 
 
 /*
  * Converts a single hexadecimal digit to a byte
  */
-guint8 hex_to_uint4 (char hex)
+static guint8 hex_to_uint4 (char hex)
 {
         return ('0' <= hex && hex <= '9') ? hex - '0' : hex - 'a' + 10;
 }
@@ -316,7 +317,7 @@ guint8 hex_to_uint4 (char hex)
 /*
  * Converts a byte in the range [0, 15] to a hexadecimal digit
  */
-char uint4_to_hex (guint8 byte)
+static char uint4_to_hex (guint8 byte)
 {
         return (byte < 10) ? byte + '0' : byte - 10 + 'a';
 }
@@ -324,7 +325,7 @@ char uint4_to_hex (guint8 byte)
 /*
  * Returns whether the path specified is a directory
  */
-gboolean path_is_dir (char* path)
+static gboolean path_is_dir (char* path)
 {
         struct stat st;
         int ret;
@@ -338,7 +339,7 @@ gboolean path_is_dir (char* path)
 /*
  * Ensures the specified directory exists.
  */
-void mkdirs (char* path)
+static void mkdirs (char* path)
 {
         char* path2 = g_strdup(path);
         char* tmp;
@@ -375,7 +376,7 @@ void mkdirs (char* path)
  * Converts a hexadecimal string to an bytearray
  * Free with g_slice_free1
  */
-guint8* hex_to_buf (char* hex, gsize* size)
+static guint8* hex_to_buf (char* hex, gsize* size)
 {
         gsize i;
         gsize len = strlen(hex);
@@ -397,7 +398,7 @@ guint8* hex_to_buf (char* hex, gsize* size)
 /*
  * Check whether a string is a string of hexadecimal characters
  */
-gboolean is_hex (gchar* str)
+static gboolean is_hex (gchar* str)
 {
         gsize i, len = strlen(str);
 
@@ -413,7 +414,7 @@ gboolean is_hex (gchar* str)
  * Converts a buffer to a hexadecimal string
  * Free with g_slice_free1
  */
-gchar* buf_to_hex (guint8* buf, gsize size)
+static gchar* buf_to_hex (guint8* buf, gsize size)
 {
         gssize i;
         char* str = g_slice_alloc(size * 2 + 1);
@@ -432,7 +433,7 @@ gchar* buf_to_hex (guint8* buf, gsize size)
  * Returns the path to the file for the blob with key <key>
  * It may create directories that are missing
  */
-GString* key_to_path (BProgram* prog, char* key)
+static GString* key_to_path (BProgram* prog, char* key)
 {
         GString* fn = g_string_sized_new(128);
         int i;
@@ -455,7 +456,7 @@ GString* key_to_path (BProgram* prog, char* key)
 /*
  * Creates a human readable string from a struct sockaddr
  */
-GString* sockaddr_to_gstring (struct sockaddr* sa)
+static GString* sockaddr_to_gstring (struct sockaddr* sa)
 {
         gsize len = MAX(INET_ADDRSTRLEN, INET6_ADDRSTRLEN);
         char* buf = g_alloca(len);
@@ -478,7 +479,7 @@ GString* sockaddr_to_gstring (struct sockaddr* sa)
 /*
  * Sets a fd in non-blocking mode
  */
-void fd_set_nonblocking(int s)
+static void fd_set_nonblocking(int s)
 {
         int flags = fcntl(s, F_GETFL, 0);
         int ret = fcntl(s, F_SETFL, flags | O_NONBLOCK);
@@ -488,7 +489,7 @@ void fd_set_nonblocking(int s)
 /*
  * Logs a message for a connection
  */
-void conn_log(BConn* conn, const char* format, ...)
+static void conn_log(BConn* conn, const char* format, ...)
 {
         va_list arglist;
         GString* msg = g_string_sized_new(128);
@@ -510,7 +511,7 @@ void conn_log(BConn* conn, const char* format, ...)
         g_string_free(msg, TRUE);
 }
 
-void conn_sendn_free(BProgram* prog, GList* lhconn)
+static void conn_sendn_free(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnSendN* data = conn->state_data;
@@ -523,7 +524,7 @@ void conn_sendn_free(BProgram* prog, GList* lhconn)
         conn->state = BCONN_STATE_NONE;
 }
 
-void conn_recvn_free(BProgram* prog, GList* lhconn)
+static void conn_recvn_free(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnRecvN* data = conn->state_data;
@@ -536,7 +537,7 @@ void conn_recvn_free(BProgram* prog, GList* lhconn)
         conn->state = BCONN_STATE_NONE;
 }
 
-void conn_list_free(BProgram* prog, GList* lhconn)
+static void conn_list_free(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnList* data = conn->state_data;
@@ -565,7 +566,7 @@ void conn_list_free(BProgram* prog, GList* lhconn)
         conn->state = BCONN_STATE_NONE;
 }
 
-void conn_put_free(BProgram* prog, GList* lhconn)
+static void conn_put_free(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnPut* data = conn->state_data;
@@ -584,7 +585,7 @@ void conn_put_free(BProgram* prog, GList* lhconn)
         conn->state = BCONN_STATE_NONE;
 }
 
-void conn_get_free(BProgram* prog, GList* lhconn)
+static void conn_get_free(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnGet* data = conn->state_data;
@@ -595,7 +596,7 @@ void conn_get_free(BProgram* prog, GList* lhconn)
                 close(data->pipe[0]);
         if (data->pipe[1])
                 close(data->pipe[1]);
-#endif
+#endif /* USE_SPLICE */
         g_slice_free(BConnGet, data);
         conn->state_data = NULL;
         conn->state = BCONN_STATE_NONE;
@@ -605,7 +606,7 @@ void conn_get_free(BProgram* prog, GList* lhconn)
 /*
  * Closes and frees a connection
  */
-void conn_close(BProgram* prog, GList* lhconn)
+static void conn_close(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
 
@@ -620,7 +621,7 @@ void conn_close(BProgram* prog, GList* lhconn)
                 g_mutex_unlock(conn->threads_mutex);
                 g_assert(conn->n_threads == 0);
         }
-#endif
+#endif /* USE_THREADS */
 
         conn_log(conn, "close");
 
@@ -644,7 +645,7 @@ void conn_close(BProgram* prog, GList* lhconn)
                 g_mutex_free(conn->threads_mutex);
         if (conn->threads_cond)
                 g_cond_free(conn->threads_cond);
-#endif
+#endif /* USE_THREADS */
 
         /* Close the socket */
         if (conn->sock)
@@ -661,7 +662,7 @@ void conn_close(BProgram* prog, GList* lhconn)
  * Starts a BJOB for a connection
  * Used for async. fallocate and fadvise
  */
-void  conn_start_job (BProgram* prog, BConn* conn, guint8 type)
+static void conn_start_job (BProgram* prog, BConn* conn, guint8 type)
 {
         GError* err = NULL;
         BJobConn* job = g_slice_new0(BJobConn);
@@ -686,9 +687,10 @@ void  conn_start_job (BProgram* prog, BConn* conn, guint8 type)
         if (err)
                 g_error("g_thread_pool_push: %s", err->message);
 }
-#endif
+#endif /* USE_THREADS */
 
-void conn_sendn_init(BProgram* prog, GList* lhconn, gpointer buf, gsize size)
+static void conn_sendn_init(BProgram* prog, GList* lhconn, gpointer buf,
+                            gsize size)
 {
         BConn* conn = lhconn->data;
         BConnSendN* data = g_slice_new0(BConnSendN);
@@ -714,7 +716,7 @@ void conn_sendn_init(BProgram* prog, GList* lhconn, gpointer buf, gsize size)
         conn->state_data = data;
 }
 
-void conn_get_init(BProgram* prog, GList* lhconn)
+static void conn_get_init(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnGet* data = g_slice_new0(BConnGet);
@@ -733,8 +735,8 @@ void conn_get_init(BProgram* prog, GList* lhconn)
         data->file_ready = FALSE;
 #ifdef USE_SPLICE
         data->pipe_ready = FALSE;
-#endif
         data->file_eos = FALSE;
+#endif
         conn->state_data = data;
 
         /* Open the file */
@@ -790,7 +792,7 @@ void conn_get_init(BProgram* prog, GList* lhconn)
         }
 }
 
-void conn_put_init(BProgram* prog, GList* lhconn)
+static void conn_put_init(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnPut* data = g_slice_new0(BConnPut);
@@ -846,7 +848,7 @@ void conn_put_init(BProgram* prog, GList* lhconn)
 /*
  * Accepts a new connection
  */
-void conn_accept(BProgram* prog)
+static void conn_accept(BProgram* prog)
 {
         BConn* conn = g_slice_new0(BConn);
         GString* human_addr;
@@ -875,7 +877,7 @@ void conn_accept(BProgram* prog)
         ret = setsockopt(conn->sock, SOL_SOCKET, SO_NOSIGPIPE,
                                 &opt, sizeof(opt));
         g_assert(ret == 0);
-#endif
+#endif /* SO_NOSIGPIPE */
 
         /* store it */
         conn->state = BCONN_STATE_INITIAL;
@@ -978,59 +980,69 @@ check_if_done:
                 conn_close(prog, lhconn);
         }
 }
-#endif
+#endif /* USE_SPLICE */
 
 #ifdef USE_SENDFILE
 /*
- * Use sendfile() to transfer data from the file to the socket
+ * Use sendfile() to transfer data from the file to the socket.
+ * This function is used on FreeBSD.  See conn_get_handle__splice for
+ * the version used on Linux.
  */
 static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnGet* data = conn->state_data;
+        off_t sent;
+        int res;
+        gboolean done = FALSE;
 
-        if(data->file_ready && data->socket_ready) {
-                off_t sent;
-                int res = sendfile(data->fd, conn->sock, data->n_sent, 0, NULL,
-												&sent, SF_NODISKIO | SF_MNOWAIT);
-                if (res == -1) {
-                        /* socket has been closed */
-                        if (errno == EPIPE) {
-                                conn_log(conn, "EPIPE");
-                                conn_close(prog, lhconn);
-                                return;
-                        }
+        if(!data->file_ready || !data->socket_ready)
+                return;
 
-                        if(errno == EAGAIN) {
-                                data->socket_ready = FALSE;
-                        } else if(errno == EBUSY) {
-                                data->file_ready = FALSE;
-                        } else {
-                                perror("sendfile");
-                                g_error("Sendfile failed?!\n");
-                        }
-                } else
-                        data->file_eos = TRUE;
-                data->n_sent += sent;
-                prog->n_GET_sent += sent;
-        }
+        ret = sendfile(data->fd, conn->sock, data->n_sent, 0, NULL,
+                       &sent, SF_NODISKIO | SF_MNOWAIT);
 
-        if (data->file_eos) {
+        if (res == 0)
+                /* Everything is written. */
+                done = TRUE
+        else if (res == -1) {
+                if (errno == EPIPE) {
+                        /* Peer closed the socket */
+                        conn_log(conn, "EPIPE");
+                        conn_close(prog, lhconn);
+                        return;
+                }
+
+                if(errno == EAGAIN) {
+                        /* Socket buffers are full */
+                        data->socket_ready = FALSE;
+                } else if(errno == EBUSY) {
+                        /* File buffers are depleted */
+                        data->file_ready = FALSE;
+                } else {
+                        perror("sendfile");
+                        g_error("Sendfile failed?!\n");
+                }
+        } else
+                g_assert_not_reached()
+
+        data->n_sent += sent;
+        prog->n_GET_sent += sent;
+
+        if (done) {
                 /* We're done! */
                 shutdown(conn->sock, SHUT_RDWR);
                 conn_close(prog, lhconn);
         }
 }
-#endif
+#endif /* USE_SENDFILE */
 
-void conn_get_handle(BProgram* prog, GList* lhconn)
+static void conn_get_handle(BProgram* prog, GList* lhconn)
 {
-#ifdef USE_SPLICE
+#if defined(USE_SPLICE)
         conn_get_handle__splice(prog, lhconn);
-#else
-#ifdef USE_SENDFILE
+#elif defined(USE_SENDFILE)
         conn_get_handle__sendfile(prog, lhconn);
-#endif
 #endif
 }
 
@@ -1038,7 +1050,7 @@ void conn_get_handle(BProgram* prog, GList* lhconn)
  * For BERTHA_PUT and BERTHA_SPUT, send the key and for BERTHA_SGET
  * send the size.
  */
-void conn_sendn_handle(BProgram* prog, GList* lhconn)
+static void conn_sendn_handle(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnSendN* data = conn->state_data;
@@ -1092,7 +1104,7 @@ void conn_sendn_handle(BProgram* prog, GList* lhconn)
  * BERTHA_STATS.  We will collect the statistics and transition to
  * SENDN to send them.
  */
-void conn_stats(BProgram* prog, GList* lhconn)
+static void conn_stats(BProgram* prog, GList* lhconn)
 {
         guint64 response[5];
 
@@ -1109,7 +1121,7 @@ void conn_stats(BProgram* prog, GList* lhconn)
  * Executed when we received the key in state RECVN.  Will transition
  * into SENDN with the proper response.
  */
-void conn_size(BProgram* prog, GList* lhconn)
+static void conn_size(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnRecvN* data = conn->state_data;
@@ -1147,7 +1159,7 @@ void conn_size(BProgram* prog, GList* lhconn)
  * For BERTHA_SPUT, receive the length; for BERTHA_GET and BERTHA_SGET,
  * receive the key
  */
-void conn_recvn_handle(BProgram* prog, GList* lhconn)
+static void conn_recvn_handle(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnRecvN* data = conn->state_data;
@@ -1185,72 +1197,10 @@ void conn_recvn_handle(BProgram* prog, GList* lhconn)
 }
 
 /*
- * Read the length from the BCONN_STATE_SPUT connection.
- */
-void conn_sput_handle(BProgram* prog, GList* lhconn)
-{
-        BConn* conn = lhconn->data;
-        BConnPut* data = conn->state_data;
-        ssize_t received;
-        guint8 buf2[8];
-        guint64* size_ptr;
-
-        received = recv(conn->sock, buf2, 8 - data->buf->len, 0);
-        g_assert(received >= -1);
-
-        /* Premature end of stream: ignore */
-        if (received <= 0) {
-                if (received == -1) {
-                        g_warning("SPUT recv() error:\n");
-                        perror("recv");
-                } else
-                        g_warning("SPUT Premature end of stream\n");
-                conn_close(prog, lhconn);
-                return;
-        }
-
-        /* Shortcut for when we've received the length in one part */
-        if (received == 8) {
-                g_assert(data->buf->len == 0);
-                size_ptr = (guint64*)buf2;
-                goto got_size;
-        }
-
-        g_byte_array_append(data->buf, buf2, received);
-
-        /* have we received the full key? */
-        if (data->buf->len == 8) {
-                size_ptr = (guint64*)data->buf->data;
-                goto got_size;
-        }
-        return;
-
-got_size:
-        /* We got the size!  Now transition into BCONN_STATE_PUT. */
-        if (TRUE) {
-                guint64 size = GUINT64_FROM_LE(*size_ptr);
-
-                /* Clear the buffer */
-                if (data->buf->len > 0)
-                        g_byte_array_remove_range(data->buf, 0, data->buf->len);
-
-                conn_log(conn, "SPUT %s %ld", data->tmp_fn->str, size);
-
-#ifdef USE_FALLOCATE
-                /* Pre-allocate the file in a separate thread */
-                data->advised_size = size;
-                conn_start_job(prog, conn, BJOB_FALLOCATE);
-#endif
-
-                conn->state = BCONN_STATE_PUT;
-        }
-}
-
-/*
  * Read data from a BCONN_STATE_PUT connection and write it to file and
  * calculate the checksum.
  */
-void conn_put_handle(BProgram* prog, GList* lhconn)
+static void conn_put_handle(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnPut* data = conn->state_data;
@@ -1371,7 +1321,8 @@ check_if_done:
 /*
  * Gets the next key in the listing.  Updates data.
  */
-guint8* _conn_list_handle_next_key(BProgram* prog, BConn* conn, BConnList* data)
+static guint8* _conn_list_handle_next_key(BProgram* prog, BConn* conn,
+                                          BConnList* data)
 {
         struct dirent* de;
         GString* key_hex;
@@ -1466,7 +1417,7 @@ guint8* _conn_list_handle_next_key(BProgram* prog, BConn* conn, BConnList* data)
 /*
  * Writes some data to a BCONN_STATE_LIST connection
  */
-void conn_list_handle(BProgram* prog, GList* lhconn)
+static void conn_list_handle(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnList* data = conn->state_data;
@@ -1518,7 +1469,7 @@ void conn_list_handle(BProgram* prog, GList* lhconn)
         }
 }
 
-void conn_list_init(BProgram* prog, GList* lhconn)
+static void conn_list_init(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnList* data = g_slice_new0(BConnList);
@@ -1541,7 +1492,7 @@ void conn_list_init(BProgram* prog, GList* lhconn)
         data->buf = g_byte_array_sized_new(CFG_LIST_BUFFER);
 }
 
-void conn_recvn_init(BProgram* prog, GList* lhconn)
+static void conn_recvn_init(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnRecvN* data = g_slice_new0(BConnRecvN);
@@ -1566,7 +1517,7 @@ void conn_recvn_init(BProgram* prog, GList* lhconn)
 /*
  * Handles data on a BCONN_STATE_INITIAL connection
  */
-void conn_initial_handle(BProgram* prog, GList* lhconn)
+static void conn_initial_handle(BProgram* prog, GList* lhconn)
 {
         int received = 0;
         BConn* conn = lhconn->data;
@@ -1614,7 +1565,7 @@ void conn_initial_handle(BProgram* prog, GList* lhconn)
 /*
  * Adds socket <s> to fd_set <set> and updates <highest_fd>
  */
-void fd_set_add(fd_set* set, int s, int* highest_fd)
+static void fd_set_add(fd_set* set, int s, int* highest_fd)
 {
         if(*highest_fd < s)
                 *highest_fd = s;
@@ -1624,7 +1575,7 @@ void fd_set_add(fd_set* set, int s, int* highest_fd)
 /*
  * Checks the activity
  */
-void check_fd_sets(BProgram* prog)
+static void check_fd_sets(BProgram* prog)
 {
         GList* lhconn;
 
@@ -1663,14 +1614,17 @@ void check_fd_sets(BProgram* prog)
                  * over the socket */
                 if(conn->state == BCONN_STATE_GET) {
                         BConnGet* data = conn->state_data;
+                        if(FD_ISSET(conn->sock, &prog->w_fds))
+                                data->socket_ready = TRUE;
+#if defined(USE_SPLICE)
                         if(!data->file_eos
                                         && FD_ISSET(data->fd, &prog->r_fds))
                                 data->file_ready = TRUE;
-                        if(FD_ISSET(conn->sock, &prog->w_fds))
-                                data->socket_ready = TRUE;
-#ifdef USE_SPLICE
                         if(FD_ISSET(data->pipe[1], &prog->w_fds))
                                 data->pipe_ready = TRUE;
+#elif defined(USE_SENDFILE)
+                        if(FD_ISSET(data->fd, &prog->r_fds))
+                                data->file_ready = TRUE;
 #endif
                         conn_get_handle(prog, lhconn);
                 }
@@ -1684,7 +1638,7 @@ void check_fd_sets(BProgram* prog)
 /*
  * Fills the fd_sets for select (2)
  */
-void reset_fd_sets(BProgram* prog)
+static void reset_fd_sets(BProgram* prog)
 {
         GList* lhconn;
 
@@ -1722,16 +1676,20 @@ void reset_fd_sets(BProgram* prog)
                         if(!data->socket_ready)
                                 fd_set_add(&prog->w_fds, conn->sock,
                                                 &prog->highest_fd);
+#if defined(USE_SPLICE)
                         if(!data->file_eos) {
-#ifdef USE_SPLICE
                                 if(!data->pipe_ready)
                                         fd_set_add(&prog->w_fds, data->pipe[1],
                                                         &prog->highest_fd);
-#endif
                                 if(!data->file_ready)
                                         fd_set_add(&prog->r_fds, data->fd,
                                                         &prog->highest_fd);
                         }
+#elif defined(USE_SENDFILE)
+                        if(!data->file_ready)
+                                fd_set_add(&prog->r_fds, data->fd,
+                                                &prog->highest_fd);
+#endif
                 } /* For BERTHA_SPUT we wait to read the size;
                    * for BERTHA_GET, BERTHA_SGET and BERTHA_SIZE we are waiting
                    * to read the key. */
@@ -1750,7 +1708,7 @@ void reset_fd_sets(BProgram* prog)
 /*
  * Advices the kernel to readahead some data on a file being spliced.
  */
-void job_fadvise(BJobConn* job)
+static void job_fadvise(BJobConn* job)
 {
         BConn* conn = job->conn;
         BConnGet* data = conn->state_data;
@@ -1765,7 +1723,7 @@ void job_fadvise(BJobConn* job)
 /*
  * Preallocates a file for a PUT
  */
-void job_fallocate(BJobConn* job)
+static void job_fallocate(BJobConn* job)
 {
         BConn* conn = job->conn;
         BConnPut* data = conn->state_data;
@@ -1780,7 +1738,7 @@ void job_fallocate(BJobConn* job)
 /*
  * Entry of jobs started at the threadpool.
  */
-void threadpool_entry(gpointer _job, gpointer unused)
+static void threadpool_entry(gpointer _job, gpointer unused)
 {
         BJob* job = _job;
         if (job->type == BJOB_FADVISE ||
