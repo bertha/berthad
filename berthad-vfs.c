@@ -999,12 +999,12 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
         if(!data->file_ready || !data->socket_ready)
                 return;
 
-        ret = sendfile(data->fd, conn->sock, data->n_sent, 0, NULL,
+        res = sendfile(data->fd, conn->sock, data->n_sent, 0, NULL,
                        &sent, SF_NODISKIO | SF_MNOWAIT);
 
         if (res == 0)
                 /* Everything is written. */
-                done = TRUE
+                done = TRUE;
         else if (res == -1) {
                 if (errno == EPIPE) {
                         /* Peer closed the socket */
@@ -1024,7 +1024,7 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
                         g_error("Sendfile failed?!\n");
                 }
         } else
-                g_assert_not_reached()
+                g_assert_not_reached();
 
         data->n_sent += sent;
         prog->n_GET_sent += sent;
