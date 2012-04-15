@@ -1646,6 +1646,8 @@ static void reset_fd_sets(BProgram* prog)
         FD_ZERO(&prog->r_fds);
         FD_ZERO(&prog->w_fds);
 
+        prog->highest_fd = -1;
+
         /* Listen for connections prog->lsock */
         fd_set_add(&prog->r_fds, prog->lsock, &prog->highest_fd);
 
