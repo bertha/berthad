@@ -733,9 +733,11 @@ static void conn_get_init(BProgram* prog, GList* lhconn)
         /* Set new state */
         data->socket_ready = FALSE;
         data->file_ready = FALSE;
-#ifdef USE_SPLICE
+#if defined(USE_SPLICE)
         data->pipe_ready = FALSE;
         data->file_eos = FALSE;
+#elif defined(USE_SENDFILE)
+        data->n_sent = 0;
 #endif
         conn->state_data = data;
 
@@ -992,19 +994,19 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnGet* data = conn->state_data;
-        off_t sent;
+        off_t sent = 0;
         int res;
         gboolean done = FALSE;
 
         if(!data->file_ready || !data->socket_ready)
                 return;
 
-        ret = sendfile(data->fd, conn->sock, data->n_sent, 0, NULL,
+        res = sendfile(data->fd, conn->sock, data->n_sent, 0, NULL,
                        &sent, SF_NODISKIO | SF_MNOWAIT);
 
         if (res == 0)
                 /* Everything is written. */
-                done = TRUE
+                done = TRUE;
         else if (res == -1) {
                 if (errno == EPIPE) {
                         /* Peer closed the socket */
@@ -1024,7 +1026,7 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
                         g_error("Sendfile failed?!\n");
                 }
         } else
-                g_assert_not_reached()
+                g_assert_not_reached();
 
         data->n_sent += sent;
         prog->n_GET_sent += sent;
@@ -1646,6 +1648,8 @@ static void reset_fd_sets(BProgram* prog)
         FD_ZERO(&prog->r_fds);
         FD_ZERO(&prog->w_fds);
 
+        prog->highest_fd = -1;
+
         /* Listen for connections prog->lsock */
         fd_set_add(&prog->r_fds, prog->lsock, &prog->highest_fd);
 
@@ -1857,15 +1861,11 @@ int main (int argc, char** argv)
 
         /* The main loop! */
         while (prog.running) {
-                struct timeval timeout;
-                timeout.tv_sec = 1;
-                timeout.tv_usec = 0;
-
                 reset_fd_sets(&prog);
 
                 /* wait for activity */
                 ret = select(prog.highest_fd + 1, &prog.r_fds, &prog.w_fds,
-                                NULL, &timeout);
+                                NULL, NULL);
                 if (ret == 0) { /* no activity */
                         continue;
                 } else if (ret == -1) { /* error?! */
