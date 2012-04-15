@@ -1861,15 +1861,11 @@ int main (int argc, char** argv)
 
         /* The main loop! */
         while (prog.running) {
-                struct timeval timeout;
-                timeout.tv_sec = 1;
-                timeout.tv_usec = 0;
-
                 reset_fd_sets(&prog);
 
                 /* wait for activity */
                 ret = select(prog.highest_fd + 1, &prog.r_fds, &prog.w_fds,
-                                NULL, &timeout);
+                                NULL, NULL);
                 if (ret == 0) { /* no activity */
                         continue;
                 } else if (ret == -1) { /* error?! */
