@@ -733,9 +733,11 @@ static void conn_get_init(BProgram* prog, GList* lhconn)
         /* Set new state */
         data->socket_ready = FALSE;
         data->file_ready = FALSE;
-#ifdef USE_SPLICE
+#if defined(USE_SPLICE)
         data->pipe_ready = FALSE;
         data->file_eos = FALSE;
+#elif defined(USE_SENDFILE)
+        data->n_sent = 0;
 #endif
         conn->state_data = data;
 
@@ -992,7 +994,7 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnGet* data = conn->state_data;
-        off_t sent;
+        off_t sent = 0;
         int res;
         gboolean done = FALSE;
 
