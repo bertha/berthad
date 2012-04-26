@@ -1292,6 +1292,9 @@ check_if_done:
                 GString* target;
                 gsize len = 32;
 
+                /* Close the file descriptor */
+                close(data->fd);
+
                 /* Get the final key */
                 g_checksum_get_digest(data->checksum, key, &len);
                 g_assert(len == 32);
