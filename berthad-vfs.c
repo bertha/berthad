@@ -1296,6 +1296,7 @@ check_if_done:
 
                 /* Close the file descriptor */
                 close(data->fd);
+                data->fd = 0;
 
                 /* Get the final key */
                 g_checksum_get_digest(data->checksum, key, &len);
