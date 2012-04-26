@@ -10,7 +10,8 @@ by its SHA256 hash with just three operations:
 
 Features
 --------
-* __GET__s are fast.  They are implemented using Linux' `splice` and FreeBSD's `sendfile` syscall.
+* __GET__s are fast.  They are implemented using Linux' `splice` and FreeBSD's
+  `sendfile` syscall.
 * Small codebase.
 * No authentication.  No SSL.  If you don't need them, they are only
   an overhead.
