@@ -1019,8 +1019,11 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
                         /* Socket buffers are full */
                         data->socket_ready = FALSE;
                 } else if(errno == EBUSY) {
+			char cbuf;
                         /* File buffers are depleted */
                         data->file_ready = FALSE;
+                        /* Trigger the kernel to read from the disk */
+                        res = read(data->fd, &cbuf, 1);
                 } else {
                         perror("sendfile");
                         g_error("Sendfile failed?!\n");
@@ -1035,7 +1038,9 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
                 /* We're done! */
                 shutdown(conn->sock, SHUT_RDWR);
                 conn_close(prog, lhconn);
+                return;
         }
+        lseek(data->fd, data->n_sent, SEEK_SET);
 }
 #endif /* USE_SENDFILE */
 
