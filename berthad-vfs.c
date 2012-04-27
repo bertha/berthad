@@ -546,7 +546,7 @@ static void conn_put_free(BProgram* prog, GList* lhconn)
         BConnPut* data = conn->state_data;
         if (data->checksum)
                 g_checksum_free(data->checksum);
-        if (data->fd)
+        if (data->fd != -1)
                 close (data->fd);
         if (data->tmp_fn) {
                 unlink(data->tmp_fn->str);
@@ -563,7 +563,7 @@ static void conn_get_free(BProgram* prog, GList* lhconn)
 {
         BConn* conn = lhconn->data;
         BConnGet* data = conn->state_data;
-        if (data->fd)
+        if (data->fd != -1)
                 close(data->fd);
 #ifdef USE_SPLICE
         if (data->pipe[0])
@@ -1272,7 +1272,7 @@ check_if_done:
 
                 /* Close the file descriptor */
                 close(data->fd);
-                data->fd = 0;
+                data->fd = -1;
 
                 /* Get the final key */
                 g_checksum_get_digest(data->checksum, key, &len);
