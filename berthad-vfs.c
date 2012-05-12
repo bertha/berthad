@@ -952,9 +952,11 @@ splice_some_from_pipe:
                                 return;
                         }
 
-                        /* socket has been closed */
-                        if (errno == EPIPE) {
-                                conn_log(conn, "EPIPE");
+                        /* socket has been closed or is in some kind of
+                         * error. */
+                        if (errno == EPIPE || errno == ETIMEDOUT) {
+                                conn_log(conn, errno == EPIPE ?
+                                                        "EPIPE" : "ETIMEDOUT");
                                 conn_close(prog, lhconn);
                                 return;
                         }
