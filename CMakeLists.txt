@@ -7,10 +7,10 @@ set (CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
 include(CheckFunctionExists)
 
-check_function_exists(madvise HAVE_MADVISE)
 check_function_exists(splice HAVE_SPLICE)
 check_function_exists(sendfile HAVE_SENDFILE)
 check_function_exists(fallocate HAVE_FALLOCATE)
+check_function_exists(posix_fadvise HAVE_POSIX_FADVISE)
 
 configure_file(${CMAKE_SOURCE_DIR}/config.h.in ${CMAKE_SOURCE_DIR}/config.h)
 

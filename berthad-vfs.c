@@ -1,33 +1,6 @@
 #include "config.h"
+
 #define _GNU_SOURCE
-
-#ifndef CFG_BACKLOG
-# define CFG_BACKLOG 10
-#endif
-#ifndef CFG_LIST_BUFFER
-# define CFG_LIST_BUFFER 1280
-#endif
-#ifndef CFG_PUT_BUFFER
-# define CFG_PUT_BUFFER 4096
-#endif
-#ifndef CFG_DATADIR_WIDTH
-# define CFG_DATADIR_WIDTH 2
-#endif
-#ifndef CFG_DATADIR_DEPTH
-# define CFG_DATADIR_DEPTH 1
-#endif
-
-#if defined(HAVE_SPLICE)
-# define USE_SPLICE
-#elif defined(HAVE_SENDFILE)
-# define USE_SENDFILE
-#else
-# error "No splice and no sendfile"
-#endif
-
-#if defined(HAVE_FALLOCATE) || defined(HAVE_FADVISE)
-# define USE_THREADS
-#endif
 
 #include <arpa/inet.h>
 #ifdef __FreeBSD__
@@ -757,7 +730,7 @@ static void conn_get_init(BProgram* prog, GList* lhconn)
                 return;
         }
 
-#ifdef HAVE_FADVISE
+#ifdef HAVE_POSIX_FADVISE
         /* Advise the kernel on the access pattern */
         ret = posix_fadvise(data->fd, 0, 0, POSIX_FADV_SEQUENTIAL);
         g_assert(ret == 0);
@@ -1094,7 +1067,7 @@ static void conn_sendn_handle(BProgram* prog, GList* lhconn)
                 conn->state_data = ndata;
                 conn->state = BCONN_STATE_GET;
 
-#ifdef HAVE_FADVISE
+#ifdef HAVE_POSIX_FADVISE
                 /* We call posix_fadvise with POSIX_FADV_WILLNEED in a
                  * separate thread, since it may block. */
                 /* TODO do this call earlier on */
@@ -1715,7 +1688,7 @@ static void reset_fd_sets(BProgram* prog)
         }
 }
 
-#ifdef HAVE_FADVISE
+#ifdef HAVE_POSIX_FADVISE
 /*
  * Advices the kernel to readahead some data on a file being spliced.
  */
