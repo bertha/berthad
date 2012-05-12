@@ -17,7 +17,7 @@
 # define CFG_DATADIR_DEPTH 1
 #endif
 
-#if !defined(HAVE_SPLICE)
+#if defined(HAVE_SPLICE)
 # define USE_SPLICE
 #elif defined(HAVE_SENDFILE)
 # define USE_SENDFILE
