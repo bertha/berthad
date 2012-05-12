@@ -997,6 +997,15 @@ static inline void conn_get_handle__sendfile(BProgram* prog, GList* lhconn)
                 } else if(errno == EBUSY) {
                         /* File buffers are depleted */
                         data->file_ready = FALSE;
+#ifdef __FreeBSD__
+                        /* Workaround for #5.  Trigger the kernel to read
+                         * from the disk. */
+                        do {
+                                char cbuf;
+                                read(data->fd, &cbuf, 1);
+                        } while(0);
+                        lseek(data->fd, data->n_sent + sent, SEEK_SET);
+#endif /* __FreeBSD__ */
                 } else {
                         perror("sendfile");
                         g_error("Sendfile failed?!\n");
