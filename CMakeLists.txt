@@ -22,3 +22,4 @@ add_executable(berthad-vfs berthad-vfs.c)
 include_directories(${Glib_INCLUDE_DIRS})
 target_link_libraries(berthad-vfs ${Glib_LIBRARIES} ${Gthread_LIBRARIES})
 
+install (TARGETS berthad-vfs DESTINATION bin)
