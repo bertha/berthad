@@ -1,0 +1,4 @@
+#cmakedefine HAVE_SENDFILE 1
+#cmakedefine HAVE_SPLICE 1
+#cmakedefine HAVE_MADVISE 1
+#cmakedefine HAVE_FALLOCATE 1

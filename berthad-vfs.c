@@ -16,15 +16,15 @@
 # define CFG_DATADIR_DEPTH 1
 #endif
 
-#ifdef __FreeBSD__
+#if !defined(HAVE_SPLICE)
+# define USE_SPLICE
+#elif defined(HAVE_SENDFILE)
 # define USE_SENDFILE
 #else
-# define USE_SPLICE
-# define USE_FALLOCATE
-# define USE_FADVISE
-#endif /* __FreeBSD__ */
+# error "No splice and no sendfile"
+#endif
 
-#if defined(USE_FALLOCATE) || defined(USE_FADVISE)
+#if defined(HAVE_FALLOCATE) || defined(HAVE_FADVISE)
 # define USE_THREADS
 #endif
 
@@ -52,7 +52,7 @@
 
 #include <glib.h>
 
-#ifdef USE_FALLOCATE
+#ifdef HAVE_FALLOCATE
 # include <linux/falloc.h>
 #endif
 
@@ -756,7 +756,7 @@ static void conn_get_init(BProgram* prog, GList* lhconn)
                 return;
         }
 
-#ifdef USE_FADVISE
+#ifdef HAVE_FADVISE
         /* Advise the kernel on the access pattern */
         ret = posix_fadvise(data->fd, 0, 0, POSIX_FADV_SEQUENTIAL);
         g_assert(ret == 0);
@@ -839,7 +839,7 @@ static void conn_put_init(BProgram* prog, GList* lhconn)
                 conn_log(conn, "SPUT %s %ld", data->tmp_fn->str,
                                 data->advised_size);
 
-#ifdef USE_FALLOCATE
+#ifdef HAVE_FALLOCATE
                 /* Pre-allocate the file in a separate thread */
                 conn_start_job(prog, conn, BJOB_FALLOCATE);
 #endif
@@ -1093,7 +1093,7 @@ static void conn_sendn_handle(BProgram* prog, GList* lhconn)
                 conn->state_data = ndata;
                 conn->state = BCONN_STATE_GET;
 
-#ifdef USE_FADVISE
+#ifdef HAVE_FADVISE
                 /* We call posix_fadvise with POSIX_FADV_WILLNEED in a
                  * separate thread, since it may block. */
                 /* TODO do this call earlier on */
@@ -1714,7 +1714,7 @@ static void reset_fd_sets(BProgram* prog)
         }
 }
 
-#ifdef USE_FADVISE
+#ifdef HAVE_FADVISE
 /*
  * Advices the kernel to readahead some data on a file being spliced.
  */
@@ -1729,7 +1729,7 @@ static void job_fadvise(BJobConn* job)
 }
 #endif
 
-#ifdef USE_FALLOCATE
+#ifdef HAVE_FALLOCATE
 /*
  * Preallocates a file for a PUT
  */
