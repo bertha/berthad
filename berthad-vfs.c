@@ -1,3 +1,4 @@
+#include "config.h"
 #define _GNU_SOURCE
 
 #ifndef CFG_BACKLOG
