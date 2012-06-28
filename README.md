@@ -33,6 +33,13 @@ Clients
 ```
 See [py-bertha].
 
+Building
+--------
+
+```
+$ cd release
+$ ./build
+```
 
 Running
 -------
