@@ -1048,8 +1048,9 @@ static void conn_sendn_handle(BProgram* prog, GList* lhconn)
 
         /* Check if the connection was unexpectedly closed */
         if (sent == -1) {
-                if (errno == EPIPE || errno == ECONNRESET) {
-                        conn_log(conn, errno == EPIPE ? "EPIPE" : "ECONNRESET");
+                if (errno == EPIPE || errno == ECONNRESET
+                            || errno == ETIMEDOUT) {
+                        conn_log(conn, gai_strerror(errno));
                         conn_close(prog, lhconn);
                         return;
                 }
@@ -1438,9 +1439,9 @@ static void conn_list_handle(BProgram* prog, GList* lhconn)
 
                 /* Check if the connection was unexpectedly closed */
                 if (sent == -1) {
-                        if (errno == EPIPE || errno == ECONNRESET) {
-                                conn_log(conn, errno == EPIPE ? "EPIPE"
-                                                : "ECONNRESET");
+                        if (errno == EPIPE || errno == ECONNRESET
+                                    || errno == ETIMEDOUT) {
+                                conn_log(conn, gai_strerror(errno));
                                 conn_close(prog, lhconn);
                                 return;
                         }
