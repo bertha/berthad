@@ -928,9 +928,8 @@ splice_some_from_pipe:
 
                         /* socket has been closed or is in some kind of
                          * error. */
-                        if (errno == EPIPE || errno == ETIMEDOUT) {
-                                conn_log(conn, errno == EPIPE ?
-                                                        "EPIPE" : "ETIMEDOUT");
+                        if (errno == EPIPE || errno == ETIMEDOUT || errno == ECONNRESET) {
+                                conn_log(conn, strerror(errno));
                                 conn_close(prog, lhconn);
                                 return;
                         }
