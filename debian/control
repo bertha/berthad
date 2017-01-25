@@ -1,0 +1,15 @@
+Source: berthad
+Section: database
+Priority: extra
+Maintainer: Wouter Geraedts <w.geraedts@onii.org>
+Build-Depends: debhelper (>= 8.0.0), cmake, cdbs, libglib2.0-dev
+Standards-Version: 3.9.2
+Homepage: https://github.com/bertha/berthad
+
+Package: berthad
+Architecture: any
+Depends: libglib2.0-0, ${shlibs:Depends}, ${misc:Depends}
+Description: Simple, fast, no-nonsense TCP server to store blobs of data.
+ BerthaD is a simple, fast, no-nonsense TCP server to store blobs
+ of data by its SHA256 hash with just three operations:
+ PUT, LIST and GET.
