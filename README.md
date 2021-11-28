@@ -57,5 +57,5 @@ Protocol
 --------
 The protocol is described in [PROTOCOL.md].
 
-[py-bertha]: http://github.com/bwesterb/py-bertha
-[PROTOCOL.md]: https://github.com/bwesterb/berthad/blob/master/PROTOCOL.md
+[py-bertha]: http://github.com/bertha/py-bertha
+[PROTOCOL.md]: https://github.com/bertha/berthad/blob/master/PROTOCOL.md
