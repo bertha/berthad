@@ -162,11 +162,16 @@ where
         return Err("Failed to rename the temporary file to the final file location.".to_string());
     }
 
-    if stream.write(hash.as_bytes()).is_err() {
+    let mut decoded_hash = [0; 32];
+    let Ok(_) = hex::decode_to_slice(hash.clone(), &mut decoded_hash) else {
+        return Err("Failed to decode hash to bytes.".to_string());
+    };
+
+    if stream.write(&decoded_hash).is_err() {
         return Err("Failed to write key to stream.".to_string());
     }
 
-    Ok((final_file_location_directory.join(final_file_name).to_str().unwrap().to_string(), total_read_amount as u64))
+    Ok((hash, total_read_amount as u64))
 }
 
 fn get_path_to_file(file_name: String, current_depth: u8, data_dir_depth: u8, data_dir_width: u8) -> Result<String, ()> {
@@ -208,7 +213,7 @@ fn do_get_operation<T>(stream: &mut T, data_directory: Box<Path>, data_dir_depth
 where
     T: Read + Write
 {
-    let mut key_buffer = [0u8, 32];
+    let mut key_buffer = [0u8; 32];
     let Ok(size_key_buffer_written) = stream.read(&mut key_buffer) else {
         return Err("Failed to read key.".to_string());
     };
@@ -303,18 +308,23 @@ where
         return Err("Failed to rename the temporary file to the final file location.".to_string());
     }
 
-    if stream.write(hash.as_bytes()).is_err() {
+    let mut decoded_hash = [0; 32];
+    let Ok(_) = hex::decode_to_slice(hash.clone(), &mut decoded_hash) else {
+        return Err("Failed to decode hash to bytes.".to_string());
+    };
+
+    if stream.write(&decoded_hash).is_err() {
         return Err("Failed to write key to stream.".to_string());
     }
 
-    Ok((final_file_location_directory.join(final_file_name).to_str().unwrap().to_string(), total_read_amount as u64))
+    Ok((hash, total_read_amount as u64))
 }
 
 fn do_sget_operation<T>(stream: &mut T, data_directory: Box<Path>, data_dir_depth: u8, data_dir_width: u8) -> Result<(String, u64), String>
 where
     T: Read + Write
 {
-    let mut key_buffer = [0u8, 32];
+    let mut key_buffer = [0u8; 32];
     let Ok(size_key_buffer_written) = stream.read(&mut key_buffer) else {
         return Err("Failed to read key.".to_string());
     };
@@ -353,7 +363,7 @@ fn do_size_operation<T>(stream: &mut T, data_directory: Box<Path>, data_dir_dept
 where
     T: Read + Write
 {
-    let mut key_buffer = [0u8, 32];
+    let mut key_buffer = [0u8; 32];
     let Ok(size_key_buffer_written) = stream.read(&mut key_buffer) else {
         return Err("Failed to read key.".to_string());
     };
@@ -621,4 +631,58 @@ async fn main() {
     }
 
     start_listener(host_name, port, Box::from(data_path), Box::from(temporary_path), CFG_DATA_DIR_DEPTH, CFG_DATA_DIR_WIDTH);
+}
+
+#[cfg(test)]
+mod tests {
+    use tempdir::TempDir;
+    use super::*;
+    use mockstream::MockStream;
+
+    fn initialize_directories() -> (TempDir, TempDir) {
+        let data_dir = TempDir::new(&Uuid::new_v4().to_string()).unwrap();
+        let tmp_dir = TempDir::new(&Uuid::new_v4().to_string()).unwrap();
+
+        (data_dir, tmp_dir)
+    }
+
+    #[tokio::test]
+    async fn test_put_operation() {
+        let (data_dir, tmp_dir) = initialize_directories();
+        let mut mocked_stream = MockStream::new();
+        let bytes_to_read = b"These are file contents.";
+        mocked_stream.push_bytes_to_read(bytes_to_read);
+        let result = do_put_operation(&mut mocked_stream, Box::from(data_dir.path()), Box::from(tmp_dir.path()), 2, 2).await;
+        assert!(result.is_ok());
+
+        let filename = mocked_stream.pop_bytes_written().clone();
+
+        mocked_stream.flush().unwrap();
+
+        mocked_stream.push_bytes_to_read(&filename.as_slice());
+        let result = do_get_operation(&mut mocked_stream, Box::from(data_dir.path()), 2, 2);
+        assert!(result.is_ok());
+
+        assert_eq!(mocked_stream.pop_bytes_written().as_slice(), bytes_to_read);
+    }
+
+    #[tokio::test]
+    async fn test_sput_operation() {
+        let (data_dir, tmp_dir) = initialize_directories();
+        let mut mocked_stream = MockStream::new();
+        let bytes_to_read = b"These are file contents.";
+        mocked_stream.push_bytes_to_read(&cast_u64_to_u8_array(bytes_to_read.len() as u64));
+        mocked_stream.push_bytes_to_read(bytes_to_read);
+        let result = do_sput_operation(&mut mocked_stream, Box::from(data_dir.path()), Box::from(tmp_dir.path()), 2, 2).await;
+        assert!(result.is_ok());
+
+        let filename = mocked_stream.pop_bytes_written().clone();
+        mocked_stream.flush().unwrap();
+
+        mocked_stream.push_bytes_to_read(&filename.as_slice());
+        let result = do_get_operation(&mut mocked_stream, Box::from(data_dir.path()), 2, 2);
+        assert!(result.is_ok());
+
+        assert_eq!(mocked_stream.pop_bytes_written().as_slice(), bytes_to_read);
+    }
 }
