@@ -13,6 +13,16 @@ use tokio::sync::Mutex;
 const CFG_DATA_DIR_WIDTH: u8 = 2;
 const CFG_DATA_DIR_DEPTH: u8 = 1;
 
+const LIST_OPERATION_BYTE: u8 = 0u8;
+const PUT_OPERATION_BYTE: u8 = 1u8;
+const GET_OPERATION_BYTE: u8 = 2u8;
+const QUIT_OPERATION_BYTE: u8 = 3u8;
+const SPUT_OPERATION_BYTE: u8 = 4u8;
+const SGET_OPERATION_BYTE: u8 = 5u8;
+const SIZE_OPERATION_BYTE: u8 = 6u8;
+const STATS_OPERATION_BYTE: u8 = 7u8;
+
+/// Interpret a 8 byte array as a 64 bit unsigned integer.
 fn as_u64_le(array: &[u8; 8]) -> u64 {
     ((array[0] as u64) <<  0) +
         ((array[1] as u64) <<  8) +
@@ -24,6 +34,7 @@ fn as_u64_le(array: &[u8; 8]) -> u64 {
         ((array[7] as u64) << 56)
 }
 
+/// Cast a 64 bit unsigned integer to an 8 byte array.
 fn cast_u64_to_u8_array(number: u64) -> [u8; 8] {
     return bytemuck::cast([number]);
 }
@@ -437,8 +448,7 @@ where
     }
     let operation_byte = operation_byte_buffer[0];
     match operation_byte {
-        0u8 => {
-            // LIST operation
+        LIST_OPERATION_BYTE => {
             match do_list_operation(stream, data_directory, data_dir_depth, data_dir_width) {
                 Ok(_) => {
                     println!("LIST Operation completed successfully.");
@@ -448,8 +458,7 @@ where
                 }
             }
         },
-        1u8 => {
-            // PUT operation
+        PUT_OPERATION_BYTE => {
             match do_put_operation(stream, data_directory, temporary_directory, data_dir_depth, data_dir_width).await {
                 Ok((file_name, length)) => {
                     println!("PUT File saved with key {} ({}).", file_name, length);
@@ -462,8 +471,7 @@ where
                 }
             }
         },
-        2u8 => {
-            // GET operation
+        GET_OPERATION_BYTE => {
             match do_get_operation(stream, data_directory, data_dir_depth, data_dir_width) {
                 Ok((file_name, length)) => {
                     println!("GET File with key {} ({}) written to stream.", file_name, length);
@@ -477,13 +485,11 @@ where
             }
 
         },
-        3u8 => {
-            // QUIT operation
+        QUIT_OPERATION_BYTE => {
             println!("QUIT");
             exit(0);
         },
-        4u8 => {
-            // SPUT operation
+        SPUT_OPERATION_BYTE => {
             match do_sput_operation(stream, data_directory, temporary_directory, data_dir_depth, data_dir_width).await {
                 Ok((file_name, length)) => {
                     println!("SPUT File saved with key {} ({}).", file_name, length);
@@ -496,8 +502,7 @@ where
                 }
             }
         },
-        5u8 => {
-            // SGET operation
+        SGET_OPERATION_BYTE => {
             match do_sget_operation(stream, data_directory, data_dir_depth, data_dir_width) {
                 Ok((file_name, length)) => {
                     println!("SGET File with key {} ({}) written to stream.", file_name, length);
@@ -510,8 +515,7 @@ where
                 }
             }
         },
-        6u8 => {
-            // SIZE operation
+        SIZE_OPERATION_BYTE => {
             match do_size_operation(stream, data_directory, data_dir_depth, data_dir_width) {
                 Ok((file_name, length)) => {
                     println!("SIZE Size of file with key {} ({}) written to stream.", file_name, length);
@@ -521,8 +525,7 @@ where
                 }
             }
         },
-        7u8 => {
-            // STATS operation
+        STATS_OPERATION_BYTE => {
             match do_stats_operation(stream, service_data.clone()).await {
                 Ok(_) => {
                     println!("STATS Stats written to stream.");
@@ -646,6 +649,62 @@ mod tests {
         (data_dir, tmp_dir)
     }
 
+    #[test]
+    fn test_byte_cast() {
+        assert_eq!(123456789123456789u64, as_u64_le(&cast_u64_to_u8_array(123456789123456789u64)));
+    }
+
+    #[test]
+    fn test_key_to_path() {
+        assert_eq!(key_to_path("thisisalongfilename".to_string(), 0, 0), Ok((PathBuf::from("".to_string()), PathBuf::from("thisisalongfilename".to_string()))));
+        assert_eq!(key_to_path("thisisalongfilename".to_string(), 4, 3), Ok((PathBuf::from("thi/sis/alo/ngf".to_string()), PathBuf::from("ilename".to_string()))));
+        assert_eq!(key_to_path("thisisalongfilename".to_string(), 2, 2), Ok((PathBuf::from("th/is".to_string()), PathBuf::from("isalongfilename".to_string()))));
+        assert!(key_to_path("thisisalongfilename".to_string(), 10, 4).is_err());
+        assert!(key_to_path("fourfourfour".to_string(), 3, 4).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_get_operation() {
+        let (data_dir, _) = initialize_directories();
+        let file_name = "0f7783b7761110eb51bd81b122f523055e7d9e7263f61093eb29ea504aa61f90".to_string();
+        let mut file = File::create(data_dir.path().join(PathBuf::from(file_name.clone()))).unwrap();
+        file.write(b"These are the file contents").unwrap();
+        let mut mocked_stream = MockStream::new();
+
+        let mut decoded = [0; 32];
+        hex::decode_to_slice(file_name, &mut decoded).unwrap();
+
+        mocked_stream.push_bytes_to_read(&decoded);
+
+        let result = do_get_operation(&mut mocked_stream, Box::from(data_dir.path()), 0, 0);
+        assert!(result.is_ok());
+
+        let file_content = mocked_stream.pop_bytes_written().clone();
+        assert_eq!(file_content.as_slice(), b"These are the file contents");
+    }
+
+    #[tokio::test]
+    async fn test_sget_operation() {
+        let (data_dir, _) = initialize_directories();
+        let file_name = "0f7783b7761110eb51bd81b122f523055e7d9e7263f61093eb29ea504aa61f90".to_string();
+        let mut file = File::create(data_dir.path().join(PathBuf::from(file_name.clone()))).unwrap();
+        file.write(b"These are the file contents").unwrap();
+        let mut mocked_stream = MockStream::new();
+
+        let mut decoded = [0; 32];
+        hex::decode_to_slice(file_name, &mut decoded).unwrap();
+
+        mocked_stream.push_bytes_to_read(&decoded);
+
+        let result = do_sget_operation(&mut mocked_stream, Box::from(data_dir.path()), 0, 0);
+        assert!(result.is_ok());
+
+        let response = mocked_stream.pop_bytes_written().clone();
+        let (file_size, file_content): (&[u8], &[u8]) = response.split_at(8);
+        assert_eq!(file_content, b"These are the file contents");
+        assert_eq!(file_size, [27, 0, 0, 0, 0, 0, 0, 0]);
+    }
+
     #[tokio::test]
     async fn test_put_operation() {
         let (data_dir, tmp_dir) = initialize_directories();
@@ -684,5 +743,25 @@ mod tests {
         assert!(result.is_ok());
 
         assert_eq!(mocked_stream.pop_bytes_written().as_slice(), bytes_to_read);
+    }
+
+    #[tokio::test]
+    async fn test_size_operation() {
+        let (data_dir, _) = initialize_directories();
+        let file_name = "0f7783b7761110eb51bd81b122f523055e7d9e7263f61093eb29ea504aa61f90".to_string();
+        let mut file = File::create(data_dir.path().join(PathBuf::from(file_name.clone()))).unwrap();
+        file.write(b"These are the file contents").unwrap();
+        let mut mocked_stream = MockStream::new();
+
+        let mut decoded = [0; 32];
+        hex::decode_to_slice(file_name, &mut decoded).unwrap();
+
+        mocked_stream.push_bytes_to_read(&decoded);
+
+        let result = do_size_operation(&mut mocked_stream, Box::from(data_dir.path()), 0, 0);
+        assert!(result.is_ok());
+
+        let file_size = mocked_stream.pop_bytes_written().clone();
+        assert_eq!(file_size.as_slice(), [27, 0, 0, 0, 0, 0, 0, 0]);
     }
 }
